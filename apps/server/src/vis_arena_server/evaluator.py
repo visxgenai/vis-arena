@@ -85,11 +85,11 @@ if [ -f pyproject.toml ]; then
   python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
   uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
   uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --built-dir /arena/work/output/built --output /arena/reports/evaluation.json
+  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation.json
 else
   ./agent info --output /arena/work/agent-info.json
   ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --built-dir /arena/work/output/built --output /arena/reports/evaluation.json
+  ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation.json
 fi
 """
 

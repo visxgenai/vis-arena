@@ -19,7 +19,7 @@ OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editab
 OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . \
   ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md \
   --data-dir ../../examples/tasks/monthly-sales/data \
-  --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built \
+  --source-dir /tmp/vis-run/source --dist-dir /tmp/vis-run/dist \
   --output /tmp/vis-run/evaluation.json
 ```
 

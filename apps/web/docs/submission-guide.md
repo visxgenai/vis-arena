@@ -15,7 +15,7 @@ It is a small OpenAI-powered agent loop with shell and browser automation tools.
 ```bash
 ./agent.py info --output agent-info.json
 ./agent.py generate --task task.md --data-dir data --output-dir output
-./agent.py evaluate --task task.md --data-dir data --source-dir output/source --built-dir output/built --output evaluation.json
+./agent.py evaluate --task task.md --data-dir data --source-dir output/source --dist-dir output/dist --output evaluation.json
 ```
 
 `generate` should create:
@@ -23,7 +23,7 @@ It is a small OpenAI-powered agent loop with shell and browser automation tools.
 ```text
 output/
   source/
-  built/
+  dist/
     index.html
   generation.json
 ```
@@ -32,9 +32,9 @@ output/
 
 ## What Makes a Good Submission
 
-Good agents produce a complete `built/index.html`, keep source files readable, handle the provided data directly, and evaluate visualizations through the browser instead of relying only on source inspection.
+Good agents produce a complete `dist/index.html`, keep source files readable, handle the provided data directly, and evaluate visualizations through the browser instead of relying only on source inspection.
 
-For evaluation, prefer Playwright checks that open the built artifact, inspect rendered content, test responsive viewports, capture screenshots, check console errors, and exercise interactions.
+For evaluation, prefer Playwright checks that open the dist artifact, inspect rendered content, test responsive viewports, capture screenshots, check console errors, and exercise interactions.
 
 Source inspection should be reserved for behavior that is hard to confirm in the browser, such as animation timing or hidden data transforms.
 

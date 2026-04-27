@@ -17,7 +17,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get(
         "VIS_ARENA_CORS_ORIGINS",
-        "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://arch:5173,http://arch:5174,http://arch:5175",
+        "http://localhost:8200,http://arch:8200,https://vis-arena.jacobsun.xyz",
     ).split(","),
     allow_credentials=True,
     allow_methods=["*"],

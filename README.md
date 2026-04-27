@@ -29,13 +29,13 @@ Every submission bundle must expose an executable with these commands:
 ```bash
 ./agent.py info --output agent-info.json
 ./agent.py generate --task task.md --data-dir data --output-dir run/generated
-./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --built-dir run/generated/built --output run/evaluation.json
+./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --dist-dir run/generated/dist --output run/evaluation.json
 ```
 
 `generate` writes:
 
 - `source/`: editable web source code.
-- `built/`: static browser-ready artifact, usually `index.html`, CSS, and JS.
+- `dist/`: static browser-ready artifact, usually `index.html`, CSS, and JS.
 - `generation.json`: metadata about the run.
 
 `evaluate` writes a JSON evaluation report with a score, rubric breakdown, browser observations, source observations, and reproducibility metadata.
@@ -70,7 +70,7 @@ Template submission:
 ```bash
 cd submissions/python-template
 OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
-OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built --output /tmp/vis-run/evaluation.json
+OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --dist-dir /tmp/vis-run/dist --output /tmp/vis-run/evaluation.json
 ```
 
 Frontend:
