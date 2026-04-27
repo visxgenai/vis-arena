@@ -6,6 +6,7 @@ This is a monorepo for the Vis Arena platform.
 
 - `apps/server/`: FastAPI backend for auth, S3 presigned storage, Docker evaluation jobs, leaderboard, artifacts, and cloud LLM token brokerage.
 - `apps/web/`: React + TypeScript + Tailwind frontend for account flows, uploads, previews, and leaderboard views.
+- `apps/web/docs/`: Markdown help documents rendered in the web UI with `react-markdown`.
 - `packages/arena-sdk/`: Python SDK and `vis-arena` CLI for arena access.
 - `submissions/python-template/`: Reference OpenAI participant agent bundle with `info`, `generate`, and `evaluate` commands.
 - `docs/`: Protocol and contributor-facing design documentation.
@@ -43,6 +44,8 @@ python -m compileall submissions/python-template/agent.py packages/arena-sdk/src
 Python targets 3.11+. Prefer typed Pydantic models for API payloads and `pathlib.Path` for paths. Keep CLIs non-interactive unless a command explicitly documents prompting. Use snake_case for Python modules/functions and kebab-case for CLI command names.
 
 Frontend code is TypeScript with React function components and Tailwind utility classes. Use PascalCase for components, camelCase for variables/functions, and keep reusable UI structure in small typed components.
+
+Keep user-facing arena instructions in `apps/web/docs/*.md`. When upload flows, dataset format, submission commands, evaluation behavior, or authentication changes, update those Markdown docs in the same change.
 
 ## Testing Guidelines
 

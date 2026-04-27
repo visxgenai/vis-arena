@@ -1,6 +1,10 @@
 import React, { ChangeEvent, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { BarChart3, Database, FileArchive, KeyRound, Trophy, Upload } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import { BarChart3, BookOpen, Database, FileArchive, KeyRound, Trophy, Upload } from "lucide-react";
+import datasetGuide from "../docs/dataset-guide.md?raw";
+import gettingStarted from "../docs/getting-started.md?raw";
+import submissionGuide from "../docs/submission-guide.md?raw";
 import "./index.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
@@ -31,6 +35,12 @@ type ApiClient = {
   post<T>(path: string, body?: unknown): Promise<T>;
 };
 
+const DOCS = [
+  { id: "getting-started", label: "Getting Started", body: gettingStarted },
+  { id: "submissions", label: "Submissions", body: submissionGuide },
+  { id: "datasets", label: "Datasets", body: datasetGuide },
+];
+
 function App() {
   const [token, setToken] = useState(() => localStorage.getItem("visArenaToken") || "");
   const [email, setEmail] = useState("");
@@ -39,8 +49,10 @@ function App() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [message, setMessage] = useState("");
+  const [activeDocId, setActiveDocId] = useState(DOCS[0].id);
 
   const api = useMemo(() => makeApi(token), [token]);
+  const activeDoc = DOCS.find((doc) => doc.id === activeDocId) || DOCS[0];
 
   useEffect(() => {
     if (token) {
@@ -162,6 +174,24 @@ function App() {
               ))}
               {leaderboard.length === 0 ? <p className="text-sm text-arena-muted">No scored submissions yet.</p> : null}
             </div>
+          </section>
+
+          <section className="panel">
+            <h2 className="panel-title"><BookOpen size={18} /> Arena Docs</h2>
+            <div className="mb-4 flex flex-wrap gap-2">
+              {DOCS.map((doc) => (
+                <button
+                  className={doc.id === activeDoc.id ? "primary-button" : "ghost-button"}
+                  key={doc.id}
+                  onClick={() => setActiveDocId(doc.id)}
+                >
+                  {doc.label}
+                </button>
+              ))}
+            </div>
+            <article className="markdown-doc">
+              <ReactMarkdown>{activeDoc.body}</ReactMarkdown>
+            </article>
           </section>
         </div>
       </section>
