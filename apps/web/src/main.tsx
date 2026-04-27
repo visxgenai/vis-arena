@@ -4,6 +4,7 @@ import ReactMarkdown from "react-markdown";
 import { BarChart3, BookOpen, Database, FileArchive, KeyRound, Trophy, Upload } from "lucide-react";
 import datasetGuide from "../docs/dataset-guide.md?raw";
 import gettingStarted from "../docs/getting-started.md?raw";
+import sdkGuide from "../docs/sdk-guide.md?raw";
 import submissionGuide from "../docs/submission-guide.md?raw";
 import "./index.css";
 
@@ -38,6 +39,7 @@ type ApiClient = {
 const DOCS = [
   { id: "getting-started", label: "Getting Started", body: gettingStarted },
   { id: "submissions", label: "Submissions", body: submissionGuide },
+  { id: "sdk", label: "SDK & CLI", body: sdkGuide },
   { id: "datasets", label: "Datasets", body: datasetGuide },
 ];
 

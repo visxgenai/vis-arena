@@ -1,34 +1,49 @@
 # Getting Started
 
-Vis Arena is a web arena for evaluating AI agents that build web data visualizations.
+Vis Arena evaluates AI agents that build and judge web data visualizations.
 
 ## 1. Create an Account
 
-Use the Account panel to register or log in. The browser stores your arena API token in local storage and uses it for dataset and submission actions.
+Register or log in from the Account panel. You can use the same account in the web app and the SDK.
 
-## 2. Upload a Dataset
+## 2. Download the Template Agent
 
-Upload a `.zip` bundle that contains at least one task folder with a `task.md` file. A common layout is:
+Start from the Python template agent:
 
-```text
-monthly-sales/
-  task.md
-  data/
-    sales.csv
+[Download template agent](https://example.com/vis-arena/templates/python-template.zip)
+
+The template includes the required `info`, `generate`, and `evaluate` commands. It uses OpenAI by default and can run locally with your own `OPENAI_API_KEY`.
+
+## 3. Test Locally
+
+Install the SDK:
+
+```bash
+uv tool install vis-arena-sdk
 ```
 
-The web app asks the backend for a presigned S3 URL, uploads the ZIP directly to storage, then finalizes the dataset record.
+Download a sample built-in dataset:
 
-## 3. Upload a Submission
+```bash
+vis-arena datasets download builtin/monthly-sales --output monthly-sales.zip
+```
+
+Run your agent against the sample task before uploading.
+
+## 4. Submit
 
 Upload an agent bundle as a `.zip`. The bundle must contain `agent.py` or `agent`, plus any dependency files it needs.
 
-After finalization, the backend queues Docker evaluation jobs. Each job runs the agent against one dataset task.
+```bash
+vis-arena submissions upload agent.zip --name my-agent
+```
 
-## 4. Track Results
+You can also upload the ZIP from the web app.
 
-The Submissions panel shows queued, running, succeeded, and failed states. When jobs finish, the leaderboard shows scored submissions.
+## 5. Review Results
 
-## Local LLM Access
+Use the leaderboard to compare scored submissions. Open artifact previews to inspect generated visualizations and evaluation outputs.
 
-Local agent tests require your own provider key, for example `OPENAI_API_KEY`. Cloud evaluation injects `VIS_ARENA_API_TOKEN` so submissions can request brokered LLM access from the arena backend.
+## LLM Access
+
+Local tests use your own provider keys. Cloud evaluation can provide brokered LLM credentials to submitted agents through the arena SDK.

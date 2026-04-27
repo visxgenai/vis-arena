@@ -64,6 +64,10 @@
     @apply my-2;
   }
 
+  .markdown-doc a {
+    @apply font-semibold text-arena-blue underline underline-offset-2;
+  }
+
   .markdown-doc ul,
   .markdown-doc ol {
     @apply my-2 pl-5;

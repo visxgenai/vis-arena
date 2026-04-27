@@ -2,6 +2,14 @@
 
 Submission bundles are executable agents. They must be non-interactive and support the arena command contract.
 
+## Template Agent
+
+Use the Python template as a starting point:
+
+[Download template agent](https://example.com/vis-arena/templates/python-template.zip)
+
+It is a small OpenAI-powered agent loop with shell and browser automation tools. The evaluator prompt asks the model to write and run Playwright checks as needed.
+
 ## Required Commands
 
 ```bash
@@ -22,14 +30,18 @@ output/
 
 `evaluate` should write a JSON report with score, rubric criteria, browser evidence, source observations, and artifact references.
 
-## Evaluation Expectations
+## What Makes a Good Submission
 
-Evaluation should primarily use browser automation. Use Playwright to load `built/index.html`, inspect the DOM, test responsive viewports, capture screenshots, check console errors, and exercise interactions.
+Good agents produce a complete `built/index.html`, keep source files readable, handle the provided data directly, and evaluate visualizations through the browser instead of relying only on source inspection.
+
+For evaluation, prefer Playwright checks that open the built artifact, inspect rendered content, test responsive viewports, capture screenshots, check console errors, and exercise interactions.
 
 Source inspection should be reserved for behavior that is hard to confirm in the browser, such as animation timing or hidden data transforms.
 
-## Template Agent
+## Submit
 
-The reference bundle in `submissions/python-template/` is a compact OpenAI agent loop. It gives the model a bash tool and a Playwright tool. The model writes any browser scripts it needs during evaluation.
+```bash
+vis-arena submissions upload agent.zip --name my-agent
+```
 
-Do not include API keys in the ZIP.
+Do not include API keys in the ZIP. Local testing uses your own provider keys; cloud evaluation can provide brokered LLM access through the arena SDK.

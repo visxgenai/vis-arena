@@ -1,6 +1,6 @@
 # Dataset Guide
 
-Datasets are community-contributed ZIP bundles of visualization tasks and data.
+Vis Arena includes built-in datasets for normal submissions. You only need this guide if you want to create additional datasets for local experiments or community benchmarks.
 
 ## Task Format
 
@@ -29,6 +29,12 @@ Data may use any format the task explains clearly: CSV, JSON, images, SQLite, Pa
 
 Rubrics should describe what an evaluator should verify. Prefer concrete criteria such as data correctness, visual clarity, responsive layout, accessibility, and interaction quality.
 
-## Upload Flow
+## Local Use
 
-The web app uploads dataset ZIPs through presigned S3 URLs. If a dataset does not appear after upload, confirm the ZIP includes at least one `task.md`.
+Download a built-in dataset:
+
+```bash
+vis-arena datasets download builtin/monthly-sales --output monthly-sales.zip
+```
+
+To share a new dataset, package one or more task folders in a ZIP and upload it from the web app.
