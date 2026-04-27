@@ -1,19 +1,16 @@
 from __future__ import annotations
 
-import json
 import os
-from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, HTTPException, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
 
 from .auth import authenticate, create_token, create_user, current_user
 from .db import connect, decode_json, init_db, row_to_dict
 from .schemas import AuthResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
 from .settings import settings
-from .storage import create_dataset, create_submission
+from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get
 
 app = FastAPI(title="Vis Arena API", version="0.1.0")
 app.add_middleware(
@@ -31,7 +28,6 @@ app.add_middleware(
 @app.on_event("startup")
 def startup() -> None:
     init_db()
-    settings.storage_dir.mkdir(parents=True, exist_ok=True)
 
 
 @app.get("/health")
@@ -71,18 +67,14 @@ def list_datasets(user: dict = Depends(current_user)) -> dict:
     return {"items": [dict(row) for row in rows]}
 
 
-@app.post("/v1/datasets")
-def upload_dataset(
-    name: str = Form(...),
-    visibility: str = Form("private"),
-    file: UploadFile = File(...),
-    user: dict = Depends(current_user),
-) -> dict:
-    if visibility not in {"private", "public"}:
-        raise HTTPException(status_code=400, detail="visibility must be private or public")
-    if not file.filename or not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Dataset upload must be a ZIP file")
-    return create_dataset(user["id"], name, visibility, file)
+@app.post("/v1/datasets/uploads")
+def create_dataset_presigned_upload(payload: dict, user: dict = Depends(current_user)) -> dict:
+    return create_dataset_upload(user["id"], payload["name"], payload.get("visibility", "private"))
+
+
+@app.post("/v1/datasets/{dataset_id}/finalize")
+def finalize_dataset_upload(dataset_id: str, user: dict = Depends(current_user)) -> dict:
+    return finalize_dataset(dataset_id, user["id"])
 
 
 @app.get("/v1/datasets/{dataset_id}/tasks")
@@ -94,22 +86,20 @@ def list_tasks(dataset_id: str, user: dict = Depends(current_user)) -> dict:
 
 
 @app.get("/v1/datasets/{dataset_id}/download")
-def download_dataset(dataset_id: str, user: dict = Depends(current_user)) -> FileResponse:
+def download_dataset(dataset_id: str, user: dict = Depends(current_user)) -> dict:
     dataset = _require_dataset_access(dataset_id, user["id"])
-    return FileResponse(os.path.join(dataset["storage_path"], "bundle.zip"), media_type="application/zip", filename=f"{dataset['name']}.zip")
+    return presigned_get(dataset["s3_key"])
 
 
-@app.post("/v1/submissions")
-def upload_submission(
-    name: str = Form(...),
-    file: UploadFile = File(...),
-    user: dict = Depends(current_user),
-) -> dict:
-    if not file.filename or not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Submission upload must be a ZIP file")
-    submission = create_submission(user["id"], name, file)
-    # This scaffold queues the job but leaves execution to a container worker.
-    return submission
+@app.post("/v1/submissions/uploads")
+def create_submission_presigned_upload(payload: dict, user: dict = Depends(current_user)) -> dict:
+    return create_submission_upload(user["id"], payload["name"])
+
+
+@app.post("/v1/submissions/{submission_id}/finalize")
+def finalize_submission_upload(submission_id: str, payload: dict | None = None, user: dict = Depends(current_user)) -> dict:
+    payload = payload or {}
+    return finalize_submission(submission_id, user["id"], payload.get("dataset_id"))
 
 
 @app.get("/v1/submissions")
@@ -140,20 +130,26 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
     _require_submission_access(submission_id, user["id"])
     with connect() as db:
         rows = db.execute(
-            "select id, submission_id, dataset_id, status, result_json, created_at, updated_at from jobs where submission_id = ? order by created_at desc",
+            "select id, submission_id, dataset_id, task_id, status, result_json, artifact_s3_prefix, error, created_at, updated_at from jobs where submission_id = ? order by created_at desc",
             (submission_id,),
         ).fetchall()
     return {"items": [{**dict(row), "result": decode_json(row["result_json"], None)} for row in rows]}
 
 
-@app.get("/v1/submissions/{submission_id}/artifacts/{artifact_path:path}")
-def get_submission_artifact(submission_id: str, artifact_path: str, user: dict = Depends(current_user)) -> FileResponse:
-    submission = _require_submission_access(submission_id, user["id"])
-    root = Path(submission["storage_path"]) / "results"
-    target = (root / artifact_path).resolve()
-    if not str(target).startswith(str(root.resolve())) or not target.is_file():
-        raise HTTPException(status_code=404, detail="Artifact not found")
-    return FileResponse(target)
+@app.get("/v1/jobs/{job_id}/artifacts")
+def get_job_artifacts(job_id: str, user: dict = Depends(current_user)) -> dict:
+    with connect() as db:
+        row = db.execute(
+            """
+            select jobs.artifact_s3_prefix
+            from jobs join submissions on submissions.id = jobs.submission_id
+            where jobs.id = ? and submissions.owner_id = ?
+            """,
+            (job_id, user["id"]),
+        ).fetchone()
+    if row is None or not row["artifact_s3_prefix"]:
+        raise HTTPException(status_code=404, detail="Artifacts not found")
+    return presigned_get(f"{row['artifact_s3_prefix']}.zip")
 
 
 @app.get("/v1/leaderboard")
@@ -178,14 +174,15 @@ def llm_token(payload: LLMTokenRequest, user: dict = Depends(current_user)) -> d
             status_code=403,
             detail="Cloud LLM brokerage is disabled in this deployment. Use your own provider keys for local testing.",
         )
+    if payload.provider != "openai" or not settings.brokered_openai_api_key:
+        raise HTTPException(status_code=400, detail="Only brokered OpenAI tokens are configured in this scaffold")
     # Production should mint a scoped proxy token and audit user/provider/model/purpose.
-    token = create_token(user["id"])
     return {
         "provider": payload.provider,
         "model": payload.model,
-        "access_token": token,
+        "access_token": settings.brokered_openai_api_key,
         "expires_at": datetime.now(UTC) + timedelta(minutes=30),
-        "base_url": f"{settings.public_base_url}/v1/llm/proxy/{payload.provider}",
+        "base_url": None,
     }
 
 

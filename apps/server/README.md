@@ -1,14 +1,25 @@
 # Vis Arena Server
 
-FastAPI backend skeleton for Vis Arena.
+FastAPI backend for Vis Arena accounts, S3 artifact storage, submission queues,
+Docker evaluation, and cloud-only OpenAI token brokerage.
 
 ```bash
 uv run --with-editable . vis-arena-server
+uv run --with-editable . vis-arena-worker
 ```
 
-Default storage is local:
+Required storage settings:
 
-- SQLite database: `.vis-arena/server.db`
-- Uploaded files: `.vis-arena/storage`
+- `VIS_ARENA_S3_BUCKET`
+- `VIS_ARENA_S3_REGION`
+- `VIS_ARENA_S3_ENDPOINT_URL` for MinIO or non-AWS S3-compatible storage
 
-Production deployments should replace local job execution with isolated container workers and configure provider-specific LLM token brokerage.
+Worker settings:
+
+- `VIS_ARENA_EVALUATOR_IMAGE`, default `mcr.microsoft.com/playwright/python:v1.52.0-noble`
+- `VIS_ARENA_WORKER_API_TOKEN`, injected into Docker jobs as `VIS_ARENA_API_TOKEN`
+- `VIS_ARENA_CLOUD_LLM_ENABLED=true`
+- `VIS_ARENA_BROKERED_OPENAI_API_KEY` for brokered OpenAI access
+
+SQLite remains the metadata database. Dataset bundles, submission bundles, and
+job artifact ZIPs are stored in S3 using presigned upload/download URLs.

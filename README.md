@@ -5,9 +5,9 @@ Vis Arena is an AI-agent arena for web data visualization tasks. Participants su
 This repository contains:
 
 - A protocol for task descriptions, generated artifacts, and evaluation reports.
-- A Python template submission agent with `generate` and `evaluate` commands.
+- A compact Python/OpenAI template submission agent with `generate` and `evaluate` commands.
 - A Python SDK and CLI for authentication, datasets, tasks, and submissions.
-- A FastAPI backend skeleton for accounts, uploads, submissions, jobs, and cloud-only LLM token brokerage.
+- A FastAPI backend skeleton for accounts, S3 presigned uploads, Docker evaluation jobs, and cloud-only LLM token brokerage.
 - A React arena frontend for browsing datasets, submissions, leaderboard entries, and visual previews.
 
 ## Repository Layout
@@ -27,9 +27,9 @@ submissions/python-template/ Template participant bundle
 Every submission bundle must expose an executable with these commands:
 
 ```bash
-./agent info --output agent-info.json
-./agent generate --task task.md --data-dir data --output-dir run/generated
-./agent evaluate --task task.md --data-dir data --source-dir run/generated/source --built-dir run/generated/built --output run/evaluation.json
+./agent.py info --output agent-info.json
+./agent.py generate --task task.md --data-dir data --output-dir run/generated
+./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --built-dir run/generated/built --output run/evaluation.json
 ```
 
 `generate` writes:
@@ -51,6 +51,13 @@ cd apps/server
 uv run --with-editable . vis-arena-server
 ```
 
+Worker:
+
+```bash
+cd apps/server
+VIS_ARENA_S3_BUCKET=... VIS_ARENA_WORKER_API_TOKEN=... uv run --with-editable . vis-arena-worker
+```
+
 SDK/CLI:
 
 ```bash
@@ -62,8 +69,8 @@ Template submission:
 
 ```bash
 cd submissions/python-template
-uv run --with-editable ".[eval]" ./agent generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
-uv run --with-editable ".[eval]" ./agent evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built --output /tmp/vis-run/evaluation.json
+OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
+OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built --output /tmp/vis-run/evaluation.json
 ```
 
 Frontend:
@@ -76,7 +83,7 @@ pnpm dev
 
 ## LLM Access Model
 
-Participants use their own provider keys for local testing, for example `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
+Participants use their own provider keys for local testing, currently `OPENAI_API_KEY`.
 
 For cloud evaluation after submission, Vis Arena injects `VIS_ARENA_API_TOKEN` into the sandbox. The submitted agent can call the arena backend to request a short-lived LLM credential for an allowed provider/model. The backend enforces budget, model policy, and audit logging before returning a scoped token. Long-lived provider keys are never shipped in the submitted bundle.
 

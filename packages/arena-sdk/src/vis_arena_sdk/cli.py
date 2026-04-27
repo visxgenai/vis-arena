@@ -91,11 +91,11 @@ def datasets_download(dataset_id: str, output: Path, server_url: Optional[str] =
 
 
 @submissions_app.command("upload")
-def submissions_upload(path: Path, name: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     """Upload an agent submission ZIP."""
     client = _client(server_url, token)
     try:
-        submission = client.upload_submission(path, name=name)
+        submission = client.upload_submission(path, name=name, dataset_id=dataset_id)
         typer.echo(f"{submission.id}\t{submission.name}\t{submission.status}")
     finally:
         client.close()

@@ -32,7 +32,8 @@ def init_db() -> None:
               name text not null,
               visibility text not null,
               task_count integer not null default 0,
-              storage_path text not null,
+              s3_key text,
+              storage_path text not null default '',
               created_at text not null
             );
             create table if not exists tasks (
@@ -49,20 +50,29 @@ def init_db() -> None:
               name text not null,
               status text not null,
               score real,
-              storage_path text not null,
+              s3_key text,
+              storage_path text not null default '',
               created_at text not null
             );
             create table if not exists jobs (
               id text primary key,
               submission_id text not null,
               dataset_id text,
+              task_id text,
               status text not null,
               result_json text,
+              artifact_s3_prefix text,
+              error text,
               created_at text not null,
               updated_at text not null
             );
             """
         )
+        _add_column(db, "datasets", "s3_key text")
+        _add_column(db, "submissions", "s3_key text")
+        _add_column(db, "jobs", "task_id text")
+        _add_column(db, "jobs", "artifact_s3_prefix text")
+        _add_column(db, "jobs", "error text")
 
 
 @contextmanager
@@ -86,6 +96,12 @@ def decode_json(value: str | None, default):
     return json.loads(value)
 
 
+def _add_column(db: sqlite3.Connection, table: str, definition: str) -> None:
+    column = definition.split()[0]
+    rows = db.execute(f"pragma table_info({table})").fetchall()
+    if column not in {row["name"] for row in rows}:
+        db.execute(f"alter table {table} add column {definition}")
+
+
 def ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-

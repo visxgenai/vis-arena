@@ -15,11 +15,13 @@ dependencies = [
   "uvicorn>=0.29.0",
   "PyJWT>=2.8.0",
   "passlib[bcrypt]>=1.7.4",
-  "PyYAML>=6.0.1"
+  "PyYAML>=6.0.1",
+  "boto3>=1.34.0"
 ]
 
 [project.scripts]
 vis-arena-server = "vis_arena_server.main:run"
+vis-arena-worker = "vis_arena_server.evaluator:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,155 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from .db import connect, now_iso, row_to_dict
+from .settings import settings
+from .storage import copy_task_data, download_s3, make_zip, safe_extract_zip, upload_s3_file
+
+
+def run() -> None:
+    while True:
+        job = claim_job()
+        if job is None:
+            time.sleep(3)
+            continue
+        try:
+            result = run_job(job)
+            complete_job(job["id"], result)
+        except Exception as exc:
+            fail_job(job["id"], exc)
+
+
+def claim_job() -> dict[str, Any] | None:
+    with connect() as db:
+        row = db.execute(
+            """
+            select jobs.*, submissions.s3_key as submission_s3_key, datasets.s3_key as dataset_s3_key
+            from jobs
+            join submissions on submissions.id = jobs.submission_id
+            join datasets on datasets.id = jobs.dataset_id
+            where jobs.status = 'queued'
+            order by jobs.created_at
+            limit 1
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        now = now_iso()
+        db.execute("update jobs set status = ?, updated_at = ? where id = ?", ("running", now, row["id"]))
+        db.execute("update submissions set status = ? where id = ?", ("running", row["submission_id"]))
+        return dict(row)
+
+
+def run_job(job: dict[str, Any]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        submission_zip = root / "submission.zip"
+        submission_dir = root / "submission"
+        work_dir = root / "work"
+        reports_dir = root / "reports"
+        artifacts_zip = root / "artifacts.zip"
+
+        download_s3(job["submission_s3_key"], submission_zip)
+        safe_extract_zip(submission_zip, submission_dir)
+        copy_task_data(job["dataset_s3_key"], job["task_id"], work_dir)
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        script = render_container_script()
+        (root / "run.sh").write_text(script, encoding="utf-8")
+        os.chmod(root / "run.sh", 0o755)
+        run_docker(root)
+
+        evaluation = json.loads((reports_dir / "evaluation.json").read_text(encoding="utf-8"))
+        make_zip(work_dir, artifacts_zip)
+        artifact_prefix = f"jobs/{job['id']}/artifacts"
+        upload_s3_file(artifacts_zip, f"{artifact_prefix}.zip", "application/zip")
+        return {
+            "evaluation": evaluation,
+            "score": evaluation.get("score"),
+            "artifact_s3_prefix": artifact_prefix,
+        }
+
+
+def render_container_script() -> str:
+    return """#!/usr/bin/env bash
+set -euo pipefail
+cd /arena/submission
+if [ -f pyproject.toml ]; then
+  python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
+  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --built-dir /arena/work/output/built --output /arena/reports/evaluation.json
+else
+  ./agent info --output /arena/work/agent-info.json
+  ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --built-dir /arena/work/output/built --output /arena/reports/evaluation.json
+fi
+"""
+
+
+def run_docker(root: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[4]
+    cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        settings.evaluator_network,
+        "-e",
+        f"VIS_ARENA_SERVER_URL={settings.public_base_url}",
+        "-e",
+        f"VIS_ARENA_API_TOKEN={settings.arena_api_token or ''}",
+        "-e",
+        f"VIS_ARENA_OPENAI_MODEL={os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
+        "-v",
+        f"{root}:/arena",
+        "-v",
+        f"{repo_root / 'packages' / 'arena-sdk'}:/arena/sdk:ro",
+        "-w",
+        "/arena",
+        settings.evaluator_image,
+        "bash",
+        "/arena/run.sh",
+    ]
+    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=settings.evaluator_timeout_seconds)
+    (root / "reports" / "docker.log").write_text(completed.stdout, encoding="utf-8")
+    if completed.returncode != 0:
+        raise RuntimeError(f"Docker evaluation failed with exit {completed.returncode}:\n{completed.stdout[-4000:]}")
+
+
+def complete_job(job_id: str, result: dict[str, Any]) -> None:
+    now = now_iso()
+    with connect() as db:
+        job = db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone()
+        db.execute(
+            "update jobs set status = ?, result_json = ?, artifact_s3_prefix = ?, updated_at = ? where id = ?",
+            ("succeeded", json.dumps(result["evaluation"]), result["artifact_s3_prefix"], now, job_id),
+        )
+        scores = [
+            row["score"]
+            for row in db.execute("select json_extract(result_json, '$.score') as score from jobs where submission_id = ? and status = 'succeeded'", (job["submission_id"],))
+            if row["score"] is not None
+        ]
+        remaining = db.execute("select count(*) as count from jobs where submission_id = ? and status in ('queued', 'running')", (job["submission_id"],)).fetchone()["count"]
+        if remaining == 0:
+            avg = sum(float(score) for score in scores) / len(scores) if scores else None
+            status = "succeeded" if scores else "failed"
+            db.execute("update submissions set status = ?, score = ? where id = ?", (status, avg, job["submission_id"]))
+
+
+def fail_job(job_id: str, exc: Exception) -> None:
+    now = now_iso()
+    with connect() as db:
+        job = row_to_dict(db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone())
+        db.execute("update jobs set status = ?, error = ?, updated_at = ? where id = ?", ("failed", str(exc), now, job_id))
+        if job:
+            remaining = db.execute("select count(*) as count from jobs where submission_id = ? and status in ('queued', 'running')", (job["submission_id"],)).fetchone()["count"]
+            if remaining == 0:
+                db.execute("update submissions set status = ? where id = ?", ("failed", job["submission_id"]))

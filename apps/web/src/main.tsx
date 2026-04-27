@@ -28,7 +28,7 @@ type LeaderboardEntry = {
 
 type ApiClient = {
   get<T>(path: string): Promise<T>;
-  postForm<T>(path: string, body: FormData): Promise<T>;
+  post<T>(path: string, body?: unknown): Promise<T>;
 };
 
 function App() {
@@ -74,21 +74,23 @@ function App() {
   async function uploadDataset(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const body = new FormData();
-    body.append("name", file.name.replace(/\.zip$/, ""));
-    body.append("visibility", "private");
-    body.append("file", file);
-    await api.postForm<Dataset>("/v1/datasets", body);
+    const created = await api.post<{ dataset: Dataset; upload: PresignedUpload }>("/v1/datasets/uploads", {
+      name: file.name.replace(/\.zip$/, ""),
+      visibility: "private",
+    });
+    await uploadToS3(created.upload, file);
+    await api.post<Dataset>(`/v1/datasets/${created.dataset.id}/finalize`);
     await refreshAll(api, setDatasets, setSubmissions, setLeaderboard, setMessage);
   }
 
   async function uploadSubmission(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    const body = new FormData();
-    body.append("name", file.name.replace(/\.zip$/, ""));
-    body.append("file", file);
-    await api.postForm<Submission>("/v1/submissions", body);
+    const created = await api.post<{ submission: Submission; upload: PresignedUpload }>("/v1/submissions/uploads", {
+      name: file.name.replace(/\.zip$/, ""),
+    });
+    await uploadToS3(created.upload, file);
+    await api.post<Submission>(`/v1/submissions/${created.submission.id}/finalize`);
     await refreshAll(api, setDatasets, setSubmissions, setLeaderboard, setMessage);
   }
 
@@ -193,12 +195,27 @@ function makeApi(token: string): ApiClient {
       if (!response.ok) throw new Error(await response.text());
       return response.json() as Promise<T>;
     },
-    async postForm<T>(path: string, body: FormData) {
-      const response = await fetch(`${API_URL}${path}`, { method: "POST", headers: { Authorization: `Bearer ${token}` }, body });
+    async post<T>(path: string, body?: unknown) {
+      const response = await fetch(`${API_URL}${path}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
       if (!response.ok) throw new Error(await response.text());
       return response.json() as Promise<T>;
     },
   };
+}
+
+type PresignedUpload = {
+  url: string;
+  method: "PUT";
+  headers?: Record<string, string>;
+};
+
+async function uploadToS3(upload: PresignedUpload, file: File) {
+  const response = await fetch(upload.url, { method: upload.method, headers: upload.headers, body: file });
+  if (!response.ok) throw new Error(await response.text());
 }
 
 async function refreshAll(

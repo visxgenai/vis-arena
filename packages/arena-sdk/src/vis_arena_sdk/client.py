@@ -61,9 +61,13 @@ class VisArenaClient:
 
     def upload_dataset(self, bundle_path: str | Path, name: str, visibility: str = "private") -> Dataset:
         with _as_zip(bundle_path) as path, path.open("rb") as handle:
-            files = {"file": (path.name, handle, "application/zip" if path.suffix == ".zip" else "application/octet-stream")}
-            data = {"name": name, "visibility": visibility}
-            response = self._request("POST", "/v1/datasets", data=data, files=files)
+            response = self._request("POST", "/v1/datasets/uploads", json={"name": name, "visibility": visibility})
+            payload = response.json()
+            upload = payload["upload"]
+            put = httpx.put(upload["url"], content=handle, headers=upload.get("headers", {}), timeout=self.timeout)
+            if put.status_code >= 400:
+                raise VisArenaError(f"S3 upload failed: {put.status_code}: {put.text[:500]}", put.status_code)
+            response = self._request("POST", f"/v1/datasets/{payload['dataset']['id']}/finalize")
         return Dataset.model_validate(response.json())
 
     def list_tasks(self, dataset_id: str) -> list[Task]:
@@ -71,16 +75,24 @@ class VisArenaClient:
         return TypeAdapter(list[Task]).validate_python(response.json()["items"])
 
     def download_dataset(self, dataset_id: str, output: str | Path) -> Path:
-        response = self._request("GET", f"/v1/datasets/{dataset_id}/download")
+        signed = self._request("GET", f"/v1/datasets/{dataset_id}/download").json()
+        response = httpx.get(signed["url"], timeout=self.timeout, follow_redirects=True)
+        if response.status_code >= 400:
+            raise VisArenaError(f"S3 download failed: {response.status_code}: {response.text[:500]}", response.status_code)
         output_path = Path(output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_bytes(response.content)
         return output_path
 
-    def upload_submission(self, bundle_path: str | Path, name: str) -> Submission:
+    def upload_submission(self, bundle_path: str | Path, name: str, dataset_id: str | None = None) -> Submission:
         with _as_zip(bundle_path) as path, path.open("rb") as handle:
-            files = {"file": (path.name, handle, "application/zip")}
-            response = self._request("POST", "/v1/submissions", data={"name": name}, files=files)
+            response = self._request("POST", "/v1/submissions/uploads", json={"name": name})
+            payload = response.json()
+            upload = payload["upload"]
+            put = httpx.put(upload["url"], content=handle, headers=upload.get("headers", {}), timeout=self.timeout)
+            if put.status_code >= 400:
+                raise VisArenaError(f"S3 upload failed: {put.status_code}: {put.text[:500]}", put.status_code)
+            response = self._request("POST", f"/v1/submissions/{payload['submission']['id']}/finalize", json={"dataset_id": dataset_id})
         return Submission.model_validate(response.json())
 
     def list_submissions(self) -> list[Submission]:

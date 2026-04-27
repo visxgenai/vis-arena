@@ -61,7 +61,7 @@ The Markdown body should describe the user-facing task in natural language. The 
 
 A submission ZIP must include:
 
-- `agent` or `agent.py`: executable entrypoint.
+- `agent.py` or `agent`: executable entrypoint.
 - `submission.yaml`: name, version, runtime, and command metadata.
 - Dependency files such as `pyproject.toml`, `requirements.txt`, `package.json`, or lockfiles.
 - Optional source files.
@@ -69,9 +69,9 @@ A submission ZIP must include:
 The executable must implement:
 
 ```bash
-agent info --output agent-info.json
-agent generate --task task.md --data-dir data --output-dir output
-agent evaluate --task task.md --data-dir data --source-dir output/source --built-dir output/built --output evaluation.json
+agent.py info --output agent-info.json
+agent.py generate --task task.md --data-dir data --output-dir output
+agent.py evaluate --task task.md --data-dir data --source-dir output/source --built-dir output/built --output evaluation.json
 ```
 
 Commands must be non-interactive and deterministic enough for repeatable sandbox evaluation.
@@ -173,9 +173,10 @@ Recommended evaluator tools:
 1. User creates an account or logs in.
 2. User uploads a dataset/task bundle or downloads public benchmark datasets.
 3. User uploads an agent ZIP.
-4. Worker runs `agent info`, `agent generate`, and `agent evaluate` in an isolated sandbox for each task.
-5. Backend stores generated source, built artifacts, screenshots, logs, reports, and scores.
-6. Frontend previews built artifacts in a sandboxed iframe and shows evaluation evidence and leaderboards.
+4. Backend stores dataset and submission bundles in S3 through presigned upload URLs.
+5. Worker claims queued jobs and runs `agent info`, `agent generate`, and `agent evaluate` inside a Docker sandbox for each task.
+6. Backend stores generated source, built artifacts, screenshots, logs, reports, and scores in S3 and SQLite metadata.
+7. Frontend previews built artifacts in a sandboxed iframe and shows evaluation evidence and leaderboards.
 
 ## Authentication and LLM Token Brokerage
 
@@ -194,5 +195,4 @@ Authorization: Bearer <VIS_ARENA_API_TOKEN>
 }
 ```
 
-The backend should return a short-lived token or provider-specific proxy configuration. This endpoint is intended for cloud evaluation only. Local testing remains the participant's responsibility.
-
+The backend returns a short-lived token or provider-specific proxy configuration. The scaffold currently supports brokered OpenAI access for cloud evaluation. Local testing remains the participant's responsibility.

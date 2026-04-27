@@ -1,19 +1,34 @@
-# Python Template Submission
+# Python OpenAI Template Submission
 
-This is a minimal Vis Arena submission bundle. It demonstrates the required commands:
+This template is a real, minimal LLM agent. It runs an OpenAI tool loop with:
 
-```bash
-./agent info --output agent-info.json
-./agent generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
-./agent evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built --output /tmp/vis-run/evaluation.json
-```
+- `bash(command, cwd)` for file inspection and generation.
+- `playwright(script, cwd)` for browser-based evaluation. The LLM writes the Playwright script and the tool executes it.
+- `finish(result)` to return generation/evaluation summaries.
 
-For local testing, set your own provider key if your agent uses an LLM:
+Commands:
 
 ```bash
-export OPENAI_API_KEY=...
-export ANTHROPIC_API_KEY=...
+uv run --with-editable ../../packages/arena-sdk --with-editable . \
+  ./agent.py info --output /tmp/agent-info.json
+
+OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . \
+  ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md \
+  --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
+
+OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . \
+  ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md \
+  --data-dir ../../examples/tasks/monthly-sales/data \
+  --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built \
+  --output /tmp/vis-run/evaluation.json
 ```
 
-Cloud evaluation may inject `VIS_ARENA_API_TOKEN`. Use the arena SDK to request a short-lived LLM token from the backend. Do not include provider keys in your submitted ZIP.
+Local tests use your own `OPENAI_API_KEY`. During cloud evaluation, the backend injects
+`VIS_ARENA_API_TOKEN` and `VIS_ARENA_SERVER_URL`; the agent asks `vis-arena-sdk` for a
+short-lived OpenAI-compatible token/proxy. Do not package provider keys in submissions.
 
+If local evaluation uses Playwright, install browsers once with:
+
+```bash
+uv run --with-editable . playwright install chromium
+```
