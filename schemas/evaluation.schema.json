@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vis-arena.dev/schemas/evaluation.v1.json",
+  "title": "Vis Arena Evaluation Report",
+  "type": "object",
+  "required": ["schema_version", "task_id", "score", "max_score", "summary", "criteria", "metadata"],
+  "properties": {
+    "schema_version": {"const": "vis-arena.evaluation.v1"},
+    "task_id": {"type": "string"},
+    "score": {"type": "number", "minimum": 0},
+    "max_score": {"type": "number", "exclusiveMinimum": 0},
+    "summary": {"type": "string"},
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "score", "max_score", "evidence"],
+        "properties": {
+          "id": {"type": "string"},
+          "score": {"type": "number", "minimum": 0},
+          "max_score": {"type": "number", "exclusiveMinimum": 0},
+          "evidence": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "browser": {"type": "object"},
+    "source_observations": {"type": "array", "items": {"type": "string"}},
+    "artifacts": {"type": "object"},
+    "metadata": {"type": "object"}
+  }
+}
+

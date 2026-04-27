@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vis-arena-server"
+version = "0.1.0"
+description = "FastAPI backend for Vis Arena"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111.0",
+  "email-validator>=2.1.1",
+  "python-multipart>=0.0.9",
+  "pydantic>=2.7.0",
+  "uvicorn>=0.29.0",
+  "PyJWT>=2.8.0",
+  "passlib[bcrypt]>=1.7.4",
+  "PyYAML>=6.0.1"
+]
+
+[project.scripts]
+vis-arena-server = "vis_arena_server.main:run"
+
+[tool.setuptools.packages.find]
+where = ["src"]

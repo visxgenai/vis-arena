@@ -1,0 +1,16 @@
+.vis-arena/
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+!.env.example
+references/
+.codex

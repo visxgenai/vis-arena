@@ -1,0 +1,2 @@
+"""Vis Arena FastAPI server."""
+

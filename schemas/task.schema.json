@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vis-arena.dev/schemas/task.v1.json",
+  "title": "Vis Arena Task Frontmatter",
+  "type": "object",
+  "required": ["id", "title", "version", "type", "data", "rubric"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "title": {"type": "string", "minLength": 1},
+    "version": {"type": "integer", "minimum": 1},
+    "type": {"const": "visualization"},
+    "data": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "role"],
+        "properties": {
+          "path": {"type": "string"},
+          "role": {"type": "string"},
+          "media_type": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "rubric": {
+      "type": "object",
+      "required": ["total_points", "criteria"],
+      "properties": {
+        "total_points": {"type": "number", "exclusiveMinimum": 0},
+        "criteria": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "points", "description"],
+            "properties": {
+              "id": {"type": "string"},
+              "points": {"type": "number", "exclusiveMinimum": 0},
+              "description": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "constraints": {"type": "object"},
+    "evaluation": {"type": "object"}
+  }
+}
+

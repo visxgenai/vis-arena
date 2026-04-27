@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vis-arena.dev/schemas/generation.v1.json",
+  "title": "Vis Arena Generation Report",
+  "type": "object",
+  "required": ["schema_version", "task_id", "entrypoint", "source_dir", "built_dir", "created_at"],
+  "properties": {
+    "schema_version": {"const": "vis-arena.generation.v1"},
+    "task_id": {"type": "string"},
+    "entrypoint": {"type": "string"},
+    "source_dir": {"type": "string"},
+    "built_dir": {"type": "string"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "notes": {"type": "string"}
+  }
+}
+

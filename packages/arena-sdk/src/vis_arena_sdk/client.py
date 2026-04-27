@@ -1,0 +1,119 @@
+from __future__ import annotations
+
+import time
+import zipfile
+from contextlib import contextmanager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Any
+
+import httpx
+from pydantic import TypeAdapter
+
+from .models import AuthResponse, Dataset, LLMToken, Submission, Task
+
+
+class VisArenaError(RuntimeError):
+    def __init__(self, message: str, status_code: int | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class VisArenaClient:
+    def __init__(self, base_url: str = "http://localhost:8000", token: str | None = None, timeout: float = 60.0):
+        self.base_url = base_url.rstrip("/")
+        self.token = token
+        self.timeout = timeout
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, follow_redirects=True, headers=self._headers())
+
+    def close(self) -> None:
+        self._client.close()
+
+    def _headers(self) -> dict[str, str]:
+        return {"Authorization": f"Bearer {self.token}"} if self.token else {}
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+        response = self._client.request(method, path, **kwargs)
+        if response.status_code >= 400:
+            raise VisArenaError(f"{response.status_code}: {response.text[:500]}", response.status_code)
+        return response
+
+    def register(self, email: str, password: str, name: str | None = None) -> AuthResponse:
+        response = self._request("POST", "/v1/auth/register", json={"email": email, "password": password, "name": name})
+        auth = AuthResponse.model_validate(response.json())
+        self.token = auth.access_token
+        self._client.headers.update(self._headers())
+        return auth
+
+    def login(self, email: str, password: str) -> AuthResponse:
+        response = self._request("POST", "/v1/auth/login", json={"email": email, "password": password})
+        auth = AuthResponse.model_validate(response.json())
+        self.token = auth.access_token
+        self._client.headers.update(self._headers())
+        return auth
+
+    def me(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/me").json()
+
+    def list_datasets(self) -> list[Dataset]:
+        response = self._request("GET", "/v1/datasets")
+        return TypeAdapter(list[Dataset]).validate_python(response.json()["items"])
+
+    def upload_dataset(self, bundle_path: str | Path, name: str, visibility: str = "private") -> Dataset:
+        with _as_zip(bundle_path) as path, path.open("rb") as handle:
+            files = {"file": (path.name, handle, "application/zip" if path.suffix == ".zip" else "application/octet-stream")}
+            data = {"name": name, "visibility": visibility}
+            response = self._request("POST", "/v1/datasets", data=data, files=files)
+        return Dataset.model_validate(response.json())
+
+    def list_tasks(self, dataset_id: str) -> list[Task]:
+        response = self._request("GET", f"/v1/datasets/{dataset_id}/tasks")
+        return TypeAdapter(list[Task]).validate_python(response.json()["items"])
+
+    def download_dataset(self, dataset_id: str, output: str | Path) -> Path:
+        response = self._request("GET", f"/v1/datasets/{dataset_id}/download")
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(response.content)
+        return output_path
+
+    def upload_submission(self, bundle_path: str | Path, name: str) -> Submission:
+        with _as_zip(bundle_path) as path, path.open("rb") as handle:
+            files = {"file": (path.name, handle, "application/zip")}
+            response = self._request("POST", "/v1/submissions", data={"name": name}, files=files)
+        return Submission.model_validate(response.json())
+
+    def list_submissions(self) -> list[Submission]:
+        response = self._request("GET", "/v1/submissions")
+        return TypeAdapter(list[Submission]).validate_python(response.json()["items"])
+
+    def wait_for_submission(self, submission_id: str, poll_seconds: float = 5.0, timeout_seconds: float = 900.0) -> Submission:
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            response = self._request("GET", f"/v1/submissions/{submission_id}")
+            submission = Submission.model_validate(response.json())
+            if submission.status in {"succeeded", "failed", "cancelled"}:
+                return submission
+            time.sleep(poll_seconds)
+        raise VisArenaError(f"Timed out waiting for submission {submission_id}")
+
+    def request_llm_token(self, provider: str, model: str, purpose: str = "generation") -> LLMToken:
+        response = self._request("POST", "/v1/llm/token", json={"provider": provider, "model": model, "purpose": purpose})
+        return LLMToken.model_validate(response.json())
+
+
+@contextmanager
+def _as_zip(path_like: str | Path):
+    path = Path(path_like)
+    if path.is_file():
+        yield path
+        return
+    if not path.is_dir():
+        raise VisArenaError(f"Path does not exist: {path}")
+    with TemporaryDirectory() as tmp:
+        archive_path = Path(tmp) / f"{path.name}.zip"
+        with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for child in path.rglob("*"):
+                if child.is_file():
+                    archive.write(child, child.relative_to(path))
+        yield archive_path
