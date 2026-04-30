@@ -8,6 +8,8 @@ import sdkGuide from "../docs/sdk-guide.md?raw";
 import submissionGuide from "../docs/submission-guide.md?raw";
 import "./index.css";
 
+import ArenaInfra from "./pages/ArenaInfra";
+
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 type Dataset = {
@@ -52,6 +54,7 @@ function App() {
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [message, setMessage] = useState("");
   const [activeDocId, setActiveDocId] = useState(DOCS[0].id);
+  const [activeTab, setActiveTab] = useState("arena");
 
   const api = useMemo(() => makeApi(token), [token]);
   const activeDoc = DOCS.find((doc) => doc.id === activeDocId) || DOCS[0];
@@ -110,10 +113,16 @@ function App() {
 
   return (
     <main className="min-h-screen bg-arena-field">
-      <header className="flex h-14 items-center justify-between border-b border-slate-300 bg-white px-5">
-        <div className="flex items-center gap-2.5 font-extrabold text-arena-ink">
-          <BarChart3 size={24} />
-          <span>Vis Arena</span>
+      <header className="flex h-14 items-center justify-between border-b border-arena-border bg-arena-surface px-5">
+        <div className="flex items-center gap-6">
+          <div className="flex items-center gap-2.5 font-extrabold text-arena-ink font-serif italic text-lg">
+            <BarChart3 size={22} className="text-arena-orange" />
+            <span className="not-italic font-sans font-extrabold text-sm tracking-wide">VIS Arena</span>
+          </div>
+          <div className="flex items-center gap-1 border-l pl-5 border-arena-border">
+            <button className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${activeTab === "arena" ? "bg-arena-orange/15 text-arena-orange" : "text-arena-muted hover:text-arena-ink"}`} onClick={() => setActiveTab("arena")}>Arena Infra</button>
+            <button className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-colors ${activeTab === "account" ? "bg-arena-orange/15 text-arena-orange" : "text-arena-muted hover:text-arena-ink"}`} onClick={() => setActiveTab("account")}>Workspace</button>
+          </div>
         </div>
         {token ? (
           <button className="ghost-button" onClick={() => { localStorage.removeItem("visArenaToken"); setToken(""); }}>
@@ -122,81 +131,85 @@ function App() {
         ) : null}
       </header>
 
-      <section className="grid gap-4 p-4 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
-        <div className="grid content-start gap-4">
-          <section className="panel">
-            <h2 className="panel-title"><KeyRound size={18} /> Account</h2>
-            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
-              <input className="field" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email" type="email" />
-              <input className="field" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="password" type="password" />
-              <button className="primary-button" onClick={() => void login("login")}>Log in</button>
-              <button className="secondary-button" onClick={() => void login("register")}>Register</button>
-            </div>
-            {message ? <p className="mt-3 text-sm text-arena-muted">{message}</p> : null}
-          </section>
-
-          <UploadPanel title="Datasets" icon={<Database size={18} />} buttonText="Upload dataset ZIP" onChange={uploadDataset}>
-            {datasets.map((dataset) => (
-              <div className="list-row" key={dataset.id}>
-                <span className="truncate font-medium">{dataset.name}</span>
-                <small className="text-arena-muted">{dataset.visibility} · {dataset.task_count} tasks</small>
+      {activeTab === "arena" ? (
+        <ArenaInfra />
+      ) : (
+        <section className="grid gap-4 p-4 lg:grid-cols-[minmax(320px,420px)_minmax(0,1fr)]">
+          <div className="grid content-start gap-4">
+            <section className="panel">
+              <h2 className="panel-title"><KeyRound size={18} /> Account</h2>
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-1 xl:grid-cols-2">
+                <input className="field" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email" type="email" />
+                <input className="field" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="password" type="password" />
+                <button className="primary-button" onClick={() => void login("login")}>Log in</button>
+                <button className="secondary-button" onClick={() => void login("register")}>Register</button>
               </div>
-            ))}
-            {datasets.length === 0 ? <p className="mt-3 text-sm text-arena-muted">No datasets loaded.</p> : null}
-          </UploadPanel>
+              {message ? <p className="mt-3 text-sm text-arena-muted">{message}</p> : null}
+            </section>
 
-          <UploadPanel title="Submissions" icon={<FileArchive size={18} />} buttonText="Upload agent ZIP" onChange={uploadSubmission}>
-            {submissions.map((submission) => (
-              <div className="list-row" key={submission.id}>
-                <span className="truncate font-medium">{submission.name}</span>
-                <small className="text-arena-muted">{submission.status}{submission.score == null ? "" : ` · ${submission.score.toFixed(2)}`}</small>
-              </div>
-            ))}
-            {submissions.length === 0 ? <p className="mt-3 text-sm text-arena-muted">No submissions yet.</p> : null}
-          </UploadPanel>
-        </div>
-
-        <div className="grid content-start gap-4">
-          <section className="panel min-h-[430px]">
-            <h2 className="panel-title"><BarChart3 size={18} /> Artifact Preview</h2>
-            <div className="h-[360px] overflow-hidden rounded-lg border border-slate-300 bg-white">
-              <iframe className="h-full w-full border-0" title="submission preview" sandbox="allow-scripts" srcDoc={previewHtml()} />
-            </div>
-          </section>
-
-          <section className="panel">
-            <h2 className="panel-title"><Trophy size={18} /> Leaderboard</h2>
-            <div className="grid gap-2">
-              {leaderboard.map((entry, index) => (
-                <div className="grid min-h-11 grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-slate-100 bg-arena-paper px-3 py-2" key={entry.id}>
-                  <strong className="text-arena-muted">{index + 1}</strong>
-                  <span className="truncate font-medium">{entry.name}</span>
-                  <b>{Number(entry.score || 0).toFixed(2)}</b>
+            <UploadPanel title="Datasets" icon={<Database size={18} />} buttonText="Upload dataset ZIP" onChange={uploadDataset}>
+              {datasets.map((dataset) => (
+                <div className="list-row" key={dataset.id}>
+                  <span className="truncate font-medium">{dataset.name}</span>
+                  <small className="text-arena-muted">{dataset.visibility} · {dataset.task_count} tasks</small>
                 </div>
               ))}
-              {leaderboard.length === 0 ? <p className="text-sm text-arena-muted">No scored submissions yet.</p> : null}
-            </div>
-          </section>
+              {datasets.length === 0 ? <p className="mt-3 text-sm text-arena-muted">No datasets loaded.</p> : null}
+            </UploadPanel>
 
-          <section className="panel">
-            <h2 className="panel-title"><BookOpen size={18} /> Arena Docs</h2>
-            <div className="mb-4 flex flex-wrap gap-2">
-              {DOCS.map((doc) => (
-                <button
-                  className={doc.id === activeDoc.id ? "primary-button" : "ghost-button"}
-                  key={doc.id}
-                  onClick={() => setActiveDocId(doc.id)}
-                >
-                  {doc.label}
-                </button>
+            <UploadPanel title="Submissions" icon={<FileArchive size={18} />} buttonText="Upload agent ZIP" onChange={uploadSubmission}>
+              {submissions.map((submission) => (
+                <div className="list-row" key={submission.id}>
+                  <span className="truncate font-medium">{submission.name}</span>
+                  <small className="text-arena-muted">{submission.status}{submission.score == null ? "" : ` · ${submission.score.toFixed(2)}`}</small>
+                </div>
               ))}
-            </div>
-            <article className="markdown-doc">
-              <ReactMarkdown>{activeDoc.body}</ReactMarkdown>
-            </article>
-          </section>
-        </div>
-      </section>
+              {submissions.length === 0 ? <p className="mt-3 text-sm text-arena-muted">No submissions yet.</p> : null}
+            </UploadPanel>
+          </div>
+
+          <div className="grid content-start gap-4">
+            <section className="panel min-h-[430px]">
+              <h2 className="panel-title"><BarChart3 size={18} /> Artifact Preview</h2>
+              <div className="h-[360px] overflow-hidden rounded-lg border border-slate-300 bg-white">
+                <iframe className="h-full w-full border-0" title="submission preview" sandbox="allow-scripts" srcDoc={previewHtml()} />
+              </div>
+            </section>
+
+            <section className="panel">
+              <h2 className="panel-title"><Trophy size={18} /> Leaderboard</h2>
+              <div className="grid gap-2">
+                {leaderboard.map((entry, index) => (
+                  <div className="grid min-h-11 grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-slate-100 bg-arena-paper px-3 py-2" key={entry.id}>
+                    <strong className="text-arena-muted">{index + 1}</strong>
+                    <span className="truncate font-medium">{entry.name}</span>
+                    <b>{Number(entry.score || 0).toFixed(2)}</b>
+                  </div>
+                ))}
+                {leaderboard.length === 0 ? <p className="text-sm text-arena-muted">No scored submissions yet.</p> : null}
+              </div>
+            </section>
+
+            <section className="panel">
+              <h2 className="panel-title"><BookOpen size={18} /> Arena Docs</h2>
+              <div className="mb-4 flex flex-wrap gap-2">
+                {DOCS.map((doc) => (
+                  <button
+                    className={doc.id === activeDoc.id ? "primary-button" : "ghost-button"}
+                    key={doc.id}
+                    onClick={() => setActiveDocId(doc.id)}
+                  >
+                    {doc.label}
+                  </button>
+                ))}
+              </div>
+              <article className="markdown-doc">
+                <ReactMarkdown>{activeDoc.body}</ReactMarkdown>
+              </article>
+            </section>
+          </div>
+        </section>
+      )}
     </main>
   );
 }

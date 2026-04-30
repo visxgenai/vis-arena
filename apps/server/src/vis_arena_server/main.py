@@ -6,6 +6,14 @@ from datetime import UTC, datetime, timedelta
 from fastapi import Depends, HTTPException, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .arena_data import (
+    get_analytics_data,
+    get_arena_leaderboard as get_arena_infra_leaderboard,
+    get_arena_overview,
+    get_frontier_data,
+    get_scatter_data,
+    get_wins_data,
+)
 from .auth import authenticate, create_token, create_user, current_user
 from .db import connect, decode_json, init_db, row_to_dict
 from .schemas import AuthResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
@@ -165,6 +173,41 @@ def leaderboard() -> dict:
             """
         ).fetchall()
     return {"items": [dict(row) for row in rows]}
+
+
+# ---------------------------------------------------------------------------
+# Arena Infra public endpoints (no auth required)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/arena/overview")
+def arena_overview() -> dict:
+    return get_arena_overview()
+
+
+@app.get("/v1/arena/leaderboard")
+def arena_leaderboard() -> dict:
+    return get_arena_infra_leaderboard()
+
+
+@app.get("/v1/arena/frontier")
+def arena_frontier() -> dict:
+    return get_frontier_data()
+
+
+@app.get("/v1/arena/scatter")
+def arena_scatter() -> dict:
+    return get_scatter_data()
+
+
+@app.get("/v1/arena/wins")
+def arena_wins() -> dict:
+    return get_wins_data()
+
+
+@app.get("/v1/arena/analytics")
+def arena_analytics() -> dict:
+    return get_analytics_data()
 
 
 @app.post("/v1/llm/token", response_model=LLMTokenResponse)

@@ -2,54 +2,127 @@
 @tailwind components;
 @tailwind utilities;
 
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:ital,wght@0,400;0,700;1,400;1,700&family=JetBrains+Mono:wght@400;500&display=swap');
+
 @layer base {
   :root {
     font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    color: #1f2933;
-    background: #ecefe8;
+    color: #e6edf3;
+    background: #0d1117;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
     margin: 0;
+    background: #0d1117;
   }
 
   button,
   input {
     font: inherit;
   }
+
+  ::selection {
+    background: rgba(232, 168, 56, 0.3);
+    color: #e6edf3;
+  }
 }
 
 @layer components {
+
+  /* Navigation */
+  .nav-tab {
+    @apply relative inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-arena-muted transition-all duration-200 hover:text-arena-ink;
+  }
+
+  .nav-tab.active {
+    @apply text-arena-orange;
+  }
+
+  .nav-tab.active::after {
+    content: "";
+    @apply absolute bottom-0 left-2 right-2 h-[2px] rounded-full bg-arena-orange;
+  }
+
+  /* Panels */
   .panel {
-    @apply rounded-lg border border-slate-200 bg-white p-4 shadow-panel;
+    @apply rounded-xl border border-arena-border bg-arena-surface p-5 shadow-panel;
   }
 
   .panel-title {
-    @apply mb-3 flex items-center gap-2 text-[17px] font-bold text-arena-ink;
+    @apply mb-4 flex items-center gap-2 text-xs font-semibold uppercase tracking-[0.15em] text-arena-muted;
   }
 
+  .panel-heading {
+    @apply text-lg font-bold text-arena-ink;
+  }
+
+  /* Buttons */
   .primary-button {
-    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-arena-blue bg-arena-blue px-3 text-sm font-semibold text-white;
+    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-arena-orange bg-arena-orange/10 px-4 text-sm font-semibold text-arena-orange transition-all duration-200 hover:bg-arena-orange/20;
   }
 
   .secondary-button {
-    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-500 bg-slate-500 px-3 text-sm font-semibold text-white;
+    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-arena-border bg-arena-card px-4 text-sm font-semibold text-arena-ink transition-all duration-200 hover:border-arena-muted;
   }
 
   .ghost-button {
-    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-700;
+    @apply inline-flex min-h-10 cursor-pointer items-center justify-center gap-2 rounded-lg border border-transparent bg-transparent px-4 text-sm font-semibold text-arena-muted transition-all duration-200 hover:bg-arena-card hover:text-arena-ink;
   }
 
+  /* Forms */
   .field {
-    @apply min-h-10 min-w-0 rounded-md border border-slate-300 bg-white px-3 text-sm outline-none focus:border-arena-blue focus:ring-2 focus:ring-blue-100;
+    @apply min-h-10 min-w-0 rounded-lg border border-arena-border bg-arena-card px-3 text-sm text-arena-ink outline-none transition-all duration-200 placeholder:text-arena-muted/60 focus:border-arena-orange focus:ring-1 focus:ring-arena-orange/30;
   }
 
+  /* List rows */
   .list-row {
-    @apply grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-md border border-slate-100 bg-arena-paper px-3 py-2;
+    @apply grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-arena-border bg-arena-card px-4 py-2 transition-all duration-200 hover:border-arena-muted/50;
   }
 
+  /* Chart containers */
+  .chart-panel {
+    @apply rounded-xl border border-arena-border bg-arena-surface p-5 shadow-panel;
+  }
+
+  .chart-title {
+    @apply text-sm font-semibold text-arena-ink;
+  }
+
+  .chart-subtitle {
+    @apply mt-1 text-xs text-arena-muted;
+  }
+
+  /* Leaderboard */
+  .lb-row {
+    @apply grid grid-cols-[40px_32px_minmax(0, 1fr)_minmax(0, 2fr)_80px] items-center gap-3 rounded-lg px-4 py-2.5 transition-all duration-200;
+  }
+
+  .lb-row:hover {
+    @apply bg-arena-card;
+  }
+
+  /* Win matrix cell */
+  .win-cell {
+    @apply flex items-center justify-center text-xs font-mono tabular-nums;
+    width: 56px;
+    height: 40px;
+  }
+
+  /* Score bar */
+  .score-bar {
+    @apply h-2 rounded-full transition-all duration-500;
+  }
+
+  /* Participant dot */
+  .participant-dot {
+    @apply inline-block h-2.5 w-2.5 rounded-full;
+  }
+
+  /* Markdown doc (kept for docs page) */
   .markdown-doc {
-    @apply max-w-none text-sm leading-6 text-slate-700;
+    @apply max-w-none text-sm leading-6 text-arena-muted;
   }
 
   .markdown-doc h1 {
@@ -65,7 +138,7 @@
   }
 
   .markdown-doc a {
-    @apply font-semibold text-arena-blue underline underline-offset-2;
+    @apply font-semibold text-arena-orange underline underline-offset-2;
   }
 
   .markdown-doc ul,
@@ -82,14 +155,44 @@
   }
 
   .markdown-doc code {
-    @apply rounded bg-slate-100 px-1 py-0.5 text-xs text-slate-900;
+    @apply rounded bg-arena-card px-1.5 py-0.5 text-xs text-arena-ink font-mono;
   }
 
   .markdown-doc pre {
-    @apply my-3 overflow-x-auto rounded-md bg-slate-950 p-3 text-xs text-slate-100;
+    @apply my-3 overflow-x-auto rounded-lg bg-arena-bg border border-arena-border p-4 text-xs text-arena-ink;
   }
 
   .markdown-doc pre code {
-    @apply bg-transparent p-0 text-slate-100;
+    @apply bg-transparent p-0 text-arena-ink;
   }
+
+  /* Section header */
+  .section-label {
+    @apply text-[10px] font-bold uppercase tracking-[0.2em] text-arena-orange;
+  }
+
+  /* Glow border for featured panels */
+  .glow-border {
+    @apply border-arena-orange/40;
+    box-shadow: 0 0 15px rgba(232, 168, 56, 0.08);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
 }
