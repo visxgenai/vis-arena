@@ -70,9 +70,12 @@ def init_db() -> None:
         )
         _add_column(db, "datasets", "s3_key text")
         _add_column(db, "submissions", "s3_key text")
+        _add_column(db, "submissions", "storage_path text not null default ''")
         _add_column(db, "jobs", "task_id text")
         _add_column(db, "jobs", "artifact_s3_prefix text")
         _add_column(db, "jobs", "error text")
+        _add_column(db, "jobs", "arena_round integer")
+        _add_column(db, "jobs", "arena_evaluators text")
 
 
 @contextmanager

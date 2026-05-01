@@ -21,13 +21,20 @@ from .settings import settings
 from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get
 
 app = FastAPI(title="Vis Arena API", version="0.1.0")
+
+_cors_default = (
+    "http://localhost:5173,http://localhost:5174,http://localhost:5175,"
+    "http://arch:5173,http://arch:5174,http://arch:5175"
+)
+_cors_origins_raw = os.environ.get("VIS_ARENA_CORS_ORIGINS", _cors_default)
+# Support wildcard "*" to allow all origins (useful for Amplify deployments)
+_cors_origins = _cors_origins_raw.split(",")
+_cors_allow_all = "*" in _cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get(
-        "VIS_ARENA_CORS_ORIGINS",
-        "http://localhost:8200,http://arch:8200,https://vis-arena.jacobsun.xyz",
-    ).split(","),
-    allow_credentials=True,
+    allow_origins=["*"] if _cors_allow_all else _cors_origins,
+    allow_credentials=not _cors_allow_all,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -226,6 +233,40 @@ def llm_token(payload: LLMTokenRequest, user: dict = Depends(current_user)) -> d
         "access_token": settings.brokered_openai_api_key,
         "expires_at": datetime.now(UTC) + timedelta(minutes=30),
         "base_url": None,
+    }
+
+
+@app.post("/v1/arena/run")
+def arena_run(payload: dict | None = None) -> dict:
+    """Trigger a real LLM arena evaluation run (requires OPENAI_API_KEY)."""
+    import threading
+    from .arena_runner import run_arena
+
+    num_rounds = int((payload or {}).get("rounds", 4))
+
+    def _run():
+        run_arena(num_rounds=num_rounds)
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return {"status": "started", "rounds": num_rounds, "message": "Arena run started in background"}
+
+
+@app.get("/v1/arena/status")
+def arena_status() -> dict:
+    """Check whether real arena data is available."""
+    from .db import connect as _connect
+    with _connect() as db:
+        count = db.execute(
+            "SELECT COUNT(*) as n FROM jobs WHERE arena_round IS NOT NULL AND status = 'succeeded'"
+        ).fetchone()["n"]
+        rounds = db.execute(
+            "SELECT MAX(arena_round) as max_round FROM jobs WHERE arena_round IS NOT NULL AND status = 'succeeded'"
+        ).fetchone()["max_round"]
+    return {
+        "has_real_data": count > 0,
+        "completed_evaluations": count,
+        "completed_rounds": rounds or 0,
     }
 
 

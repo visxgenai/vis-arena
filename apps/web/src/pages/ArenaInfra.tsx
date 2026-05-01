@@ -24,6 +24,7 @@ export default function ArenaInfra() {
   const [wins, setWins] = useState<any>(null);
   const [analytics, setAnalytics] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isMock, setIsMock] = useState(true);
 
   useEffect(() => {
     Promise.all([
@@ -32,7 +33,13 @@ export default function ArenaInfra() {
       fetch(`${API}/v1/arena/wins`).then((r) => r.json()),
       fetch(`${API}/v1/arena/analytics`).then((r) => r.json()),
     ])
-      .then(([f, s, w, a]) => { setFrontier(f); setScatter(s); setWins(w); setAnalytics(a); })
+      .then(([f, s, w, a]) => {
+        setFrontier(f);
+        setScatter(s);
+        setWins(w);
+        setAnalytics(a);
+        setIsMock(f?.is_mock !== false);
+      })
       .catch(console.error)
       .finally(() => setLoading(false));
   }, []);
@@ -42,6 +49,7 @@ export default function ArenaInfra() {
   const participants: Participant[] = frontier?.participants || [];
   const intervals = frontier?.num_intervals || 12;
   const labels = Array.from({ length: intervals }, (_, i) => String(i + 1));
+  const dataLabel = isMock ? "MOCK" : "LIVE";
 
   return (
     <div className="mx-auto max-w-[1400px] px-6 py-8 space-y-10">
@@ -49,7 +57,8 @@ export default function ArenaInfra() {
       <section>
         <SectionHeading
           title={<>Peer-graded <em className="font-serif italic text-arena-orange">frontier</em></>}
-          subtitle={`MOCK · ${intervals} INTERVALS · ${participants.length} PARTICIPANTS`}
+          subtitle={`${dataLabel} · ${intervals} INTERVALS · ${participants.length} PARTICIPANTS`}
+          isMock={isMock}
         />
         <div className="chart-panel">
           <ParticipantLegend participants={participants} />
@@ -181,7 +190,7 @@ export default function ArenaInfra() {
       <section>
         <SectionHeading
           title={<>Who <em className="font-serif italic text-arena-orange">leads</em>, how does judgment <em className="font-serif italic text-arena-orange">drift</em>, and who <em className="font-serif italic text-arena-orange">climbs</em>?</>}
-          subtitle={`RANK · LENIENCY · CONSENSUS · ELO · ${intervals} INTERVALS · ${participants.length} REVIEWERS`}
+          subtitle={`${dataLabel} · RANK · LENIENCY · CONSENSUS · ELO · ${intervals} INTERVALS · ${participants.length} REVIEWERS`}
           legendParticipants={participants}
         />
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -217,12 +226,19 @@ export default function ArenaInfra() {
 
 /* ─── Shared sub-components ─── */
 
-function SectionHeading({ title, subtitle, legendParticipants }: { title: React.ReactNode; subtitle: string; legendParticipants?: Participant[] }) {
+function SectionHeading({ title, subtitle, legendParticipants, isMock }: { title: React.ReactNode; subtitle: string; legendParticipants?: Participant[]; isMock?: boolean }) {
   return (
     <div className="mb-5">
       <h2 className="text-2xl font-bold text-arena-ink leading-tight">{title}</h2>
       <div className="flex flex-wrap items-center gap-4 mt-1">
-        <p className="text-xs font-bold uppercase tracking-widest text-arena-muted">{subtitle}</p>
+        <p className="text-xs font-bold uppercase tracking-widest text-arena-muted">
+          {subtitle}
+          {isMock && (
+            <span className="ml-2 rounded px-1.5 py-0.5 text-[9px] font-bold bg-arena-orange/20 text-arena-orange border border-arena-orange/30">
+              DEMO DATA — run /v1/arena/run to populate with real GPT results
+            </span>
+          )}
+        </p>
         {legendParticipants && (
           <div className="flex flex-wrap items-center gap-3">
             {legendParticipants.map((p) => (
