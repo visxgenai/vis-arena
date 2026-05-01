@@ -4,6 +4,40 @@ import os
 from pathlib import Path
 
 
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def load_env() -> None:
+    app_dir = Path(__file__).resolve().parents[2]
+    candidates = [
+        Path.cwd() / ".env",
+        Path.cwd() / ".env.local",
+        app_dir / ".env",
+        app_dir / ".env.local",
+    ]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        _load_env_file(resolved)
+
+
+load_env()
+
+
 class Settings:
     secret_key: str = os.environ.get("VIS_ARENA_SECRET_KEY", "dev-secret-change-me")
     database_path: Path = Path(os.environ.get("VIS_ARENA_DB", ".vis-arena/server.db"))

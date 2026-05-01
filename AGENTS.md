@@ -61,4 +61,4 @@ Pull requests should include a short summary, verification commands run, screens
 
 ## Security & Configuration Tips
 
-Never commit provider API keys, arena tokens, `.env` files, virtual environments, build outputs, or dependency folders. Local runs use participant-owned `OPENAI_API_KEY`. Cloud evaluation should inject `VIS_ARENA_API_TOKEN` and retrieve backend-issued provider credentials. S3 bucket credentials belong in deployment secrets only.
+Never commit provider API keys, arena tokens, `.env` files, virtual environments, build outputs, or dependency folders. Keep non-secret defaults in `.env.example` files when configuration changes. Local runs use participant-owned `OPENAI_API_KEY`. Cloud evaluation should inject `VIS_ARENA_API_TOKEN` and retrieve backend-issued provider credentials. S3 bucket credentials belong in deployment secrets only.

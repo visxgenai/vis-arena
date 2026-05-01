@@ -8,7 +8,7 @@ import sdkGuide from "../docs/sdk-guide.md?raw";
 import submissionGuide from "../docs/submission-guide.md?raw";
 import "./index.css";
 
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8201";
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 type Dataset = {
   id: string;

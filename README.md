@@ -48,6 +48,7 @@ Backend:
 
 ```bash
 cd apps/server
+cp .env.example .env
 uv run --with-editable . vis-arena-server
 ```
 
@@ -77,6 +78,7 @@ Frontend:
 
 ```bash
 cd apps/web
+cp .env.example .env
 pnpm install
 pnpm dev
 ```
