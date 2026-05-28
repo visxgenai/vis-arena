@@ -129,4 +129,8 @@ def main() -> None:
         app()
     except VisArenaError as exc:
         typer.echo(f"Vis Arena API error: {exc}", err=True)
-        raise typer.Exit(1) from exc
+        # SystemExit (not typer.Exit) so the interpreter exits cleanly without
+        # printing a traceback. typer.Exit is a click exception, not a
+        # SystemExit subclass, so it would otherwise escape and trigger Python's
+        # default uncaught-exception handler.
+        raise SystemExit(1) from exc
