@@ -55,6 +55,9 @@ class VisArenaClient:
     def me(self) -> dict[str, Any]:
         return self._request("GET", "/v1/me").json()
 
+    def version(self) -> dict[str, Any]:
+        return self._request("GET", "/v1/version").json()
+
     def list_datasets(self) -> list[Dataset]:
         response = self._request("GET", "/v1/datasets")
         return TypeAdapter(list[Dataset]).validate_python(response.json()["items"])

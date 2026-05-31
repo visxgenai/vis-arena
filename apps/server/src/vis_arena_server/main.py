@@ -35,6 +35,29 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.get("/v1/version")
+def version() -> dict[str, str]:
+    return {
+        "server_version": "0.1.0",
+        "latest_cli_version": os.environ.get("VIS_ARENA_LATEST_CLI_VERSION", "0.1.0"),
+        "minimum_cli_version": os.environ.get("VIS_ARENA_MINIMUM_CLI_VERSION", "0.1.0"),
+        "update_command": (
+            'pip install --upgrade --force-reinstall '
+            '"git+https://github.com/visxgenai/vis-arena.git#subdirectory=packages/arena-sdk"'
+        ),
+    }
+
+
+def require_admin(user: dict) -> None:
+    admin_emails = {
+        email.strip().lower()
+        for email in os.environ.get("VIS_ARENA_ADMIN_EMAILS", "").split(",")
+        if email.strip()
+    }
+    if user["email"].lower() not in admin_emails:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+
 @app.post("/v1/auth/register", response_model=AuthResponse)
 def register(payload: RegisterRequest) -> dict:
     try:
@@ -69,11 +92,13 @@ def list_datasets(user: dict = Depends(current_user)) -> dict:
 
 @app.post("/v1/datasets/uploads")
 def create_dataset_presigned_upload(payload: dict, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
     return create_dataset_upload(user["id"], payload["name"], payload.get("visibility", "private"))
 
 
 @app.post("/v1/datasets/{dataset_id}/finalize")
 def finalize_dataset_upload(dataset_id: str, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
     return finalize_dataset(dataset_id, user["id"])
 
 
