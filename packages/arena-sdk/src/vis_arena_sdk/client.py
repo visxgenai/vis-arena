@@ -67,9 +67,7 @@ class VisArenaClient:
             response = self._request("POST", "/v1/datasets/uploads", json={"name": name, "visibility": visibility})
             payload = response.json()
             upload = payload["upload"]
-            put = httpx.put(upload["url"], content=handle, headers=upload.get("headers", {}), timeout=self.timeout, follow_redirects=True)
-            if not 200 <= put.status_code < 300:
-                raise VisArenaError(f"S3 upload failed: {put.status_code}: {put.text[:500]}", put.status_code)
+            put = _put_presigned_upload(upload["url"], handle, upload.get("headers", {}), self.timeout)
             response = self._request("POST", f"/v1/datasets/{payload['dataset']['id']}/finalize")
         return Dataset.model_validate(response.json())
 
@@ -92,9 +90,7 @@ class VisArenaClient:
             response = self._request("POST", "/v1/submissions/uploads", json={"name": name})
             payload = response.json()
             upload = payload["upload"]
-            put = httpx.put(upload["url"], content=handle, headers=upload.get("headers", {}), timeout=self.timeout, follow_redirects=True)
-            if not 200 <= put.status_code < 300:
-                raise VisArenaError(f"S3 upload failed: {put.status_code}: {put.text[:500]}", put.status_code)
+            put = _put_presigned_upload(upload["url"], handle, upload.get("headers", {}), self.timeout)
             response = self._request("POST", f"/v1/submissions/{payload['submission']['id']}/finalize", json={"dataset_id": dataset_id})
         return Submission.model_validate(response.json())
 
@@ -132,3 +128,16 @@ def _as_zip(path_like: str | Path):
                 if child.is_file():
                     archive.write(child, child.relative_to(path))
         yield archive_path
+
+
+def _put_presigned_upload(url: str, handle, headers: dict[str, str], timeout: float) -> httpx.Response:
+    response = httpx.put(url, content=handle, headers=headers, timeout=timeout, follow_redirects=False)
+    if 300 <= response.status_code < 400 and response.headers.get("location"):
+        raise VisArenaError(
+            "S3 upload was redirected before storing the object. "
+            "Check that VIS_ARENA_S3_REGION matches the bucket region.",
+            response.status_code,
+        )
+    if not 200 <= response.status_code < 300:
+        raise VisArenaError(f"S3 upload failed: {response.status_code}: {response.text[:500]}", response.status_code)
+    return response

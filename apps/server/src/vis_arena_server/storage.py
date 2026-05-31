@@ -19,10 +19,11 @@ from .settings import settings
 
 
 def s3_client():
+    endpoint_url = settings.s3_endpoint_url or f"https://s3.{settings.s3_region}.amazonaws.com"
     return boto3.client(
         "s3",
         region_name=settings.s3_region,
-        endpoint_url=settings.s3_endpoint_url,
+        endpoint_url=endpoint_url,
         config=Config(signature_version="s3v4"),
     )
 
