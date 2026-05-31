@@ -49,3 +49,10 @@ class LLMToken(BaseModel):
     expires_at: datetime
     base_url: str | None = None
 
+
+class LLMMessage(BaseModel):
+    provider: str
+    model: str
+    message: dict[str, Any]
+    usage: dict[str, int]
+    remaining_submission_tokens: int

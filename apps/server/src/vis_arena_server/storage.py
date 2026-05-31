@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import shutil
 import tempfile
 import uuid
@@ -68,6 +69,25 @@ def download_s3(key: str, target: Path) -> None:
 
 def upload_s3_file(path: Path, key: str, content_type: str = "application/octet-stream") -> None:
     s3_client().upload_file(str(path), settings.s3_bucket, key, ExtraArgs={"ContentType": content_type})
+
+
+def read_s3_file(key: str) -> tuple[bytes, str]:
+    try:
+        response = s3_client().get_object(Bucket=settings.s3_bucket, Key=key)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=404, detail=f"S3 object not found: {key}") from exc
+        raise
+    return response["Body"].read(), response.get("ContentType") or "application/octet-stream"
+
+
+def upload_s3_directory(source_dir: Path, prefix: str) -> None:
+    for path in source_dir.rglob("*"):
+        if path.is_file():
+            relative_key = path.relative_to(source_dir).as_posix()
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            upload_s3_file(path, f"{prefix.rstrip('/')}/{relative_key}", content_type)
 
 
 def create_dataset_upload(owner_id: str, name: str, visibility: str) -> dict[str, Any]:

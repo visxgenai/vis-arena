@@ -62,9 +62,25 @@ def init_db() -> None:
               status text not null,
               result_json text,
               artifact_s3_prefix text,
+              preview_s3_key text,
               error text,
               created_at text not null,
               updated_at text not null
+            );
+            create table if not exists llm_usage (
+              id text primary key,
+              job_id text not null,
+              submission_id text not null,
+              user_id text not null,
+              provider text not null,
+              model_id text not null,
+              purpose text not null,
+              input_tokens integer not null,
+              output_tokens integer not null,
+              total_tokens integer not null,
+              estimated_cost_usd real,
+              latency_ms integer not null,
+              created_at text not null
             );
             """
         )
@@ -72,6 +88,7 @@ def init_db() -> None:
         _add_column(db, "submissions", "s3_key text")
         _add_column(db, "jobs", "task_id text")
         _add_column(db, "jobs", "artifact_s3_prefix text")
+        _add_column(db, "jobs", "preview_s3_key text")
         _add_column(db, "jobs", "error text")
 
 

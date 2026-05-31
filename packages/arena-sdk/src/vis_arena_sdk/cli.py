@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Optional
@@ -12,9 +13,11 @@ from .config import load_config, resolve_server_url, resolve_token, save_config
 app = typer.Typer(help="Vis Arena command line client")
 datasets_app = typer.Typer(help="Dataset commands")
 submissions_app = typer.Typer(help="Submission commands")
+results_app = typer.Typer(help="Result commands")
 llm_app = typer.Typer(help="Cloud LLM token commands")
 app.add_typer(datasets_app, name="datasets")
 app.add_typer(submissions_app, name="submissions")
+app.add_typer(results_app, name="results")
 app.add_typer(llm_app, name="llm")
 
 
@@ -186,6 +189,38 @@ def submissions_list(server_url: Optional[str] = None, token: Optional[str] = No
         for submission in client.list_submissions():
             score = "" if submission.score is None else f"{submission.score:.2f}"
             typer.echo(f"{submission.id}\t{submission.name}\t{submission.status}\t{score}")
+    finally:
+        client.close()
+
+
+@submissions_app.command("usage")
+def submissions_usage(submission_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Show LLM usage for a submission."""
+    client = _client(server_url, token)
+    try:
+        typer.echo(json.dumps(client.get_submission_llm_usage(submission_id), indent=2))
+    finally:
+        client.close()
+
+
+@submissions_app.command("results")
+def submissions_results(submission_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """List task-level results for a submission."""
+    client = _client(server_url, token)
+    try:
+        for result in client.list_submission_jobs(submission_id):
+            preview = "preview" if result.get("preview_s3_key") else ""
+            typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{preview}")
+    finally:
+        client.close()
+
+
+@results_app.command("preview")
+def preview_result(result_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Print an HTML preview URL for a task-level result."""
+    client = _client(server_url, token)
+    try:
+        typer.echo(client.get_job_preview_url(result_id))
     finally:
         client.close()
 

@@ -12,6 +12,9 @@ Commands:
 uv run --with-editable ../../packages/arena-sdk --with-editable . \
   ./agent.py info --output /tmp/agent-info.json
 
+uv run --with-editable ../../packages/arena-sdk --with-editable . \
+  ./agent.py models
+
 OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . \
   ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md \
   --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
@@ -24,8 +27,12 @@ OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editab
 ```
 
 Local tests use your own `OPENAI_API_KEY`. During cloud evaluation, the backend injects
-`VIS_ARENA_API_TOKEN` and `VIS_ARENA_SERVER_URL`; the agent asks `vis-arena-sdk` for a
-short-lived OpenAI-compatible token/proxy. Do not package provider keys in submissions.
+`VIS_ARENA_API_TOKEN`, `VIS_ARENA_SERVER_URL`, and `VIS_ARENA_JOB_ID`; the agent routes
+model calls through the arena backend so provider keys stay on the server and token usage
+can be tracked per submission. Do not package provider keys in submissions.
+
+Cloud deployments may expose multiple models through `VIS_ARENA_LLM_MODELS`. Set
+`VIS_ARENA_LLM_MODEL` to choose one; otherwise the first configured model is used.
 
 If local evaluation uses Playwright, install browsers once with:
 

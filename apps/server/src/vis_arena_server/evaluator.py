@@ -8,9 +8,10 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .auth import create_token
 from .db import connect, now_iso, row_to_dict
 from .settings import settings
-from .storage import copy_task_data, download_s3, make_zip, safe_extract_zip, upload_s3_file
+from .storage import copy_task_data, download_s3, make_zip, safe_extract_zip, upload_s3_directory, upload_s3_file
 
 
 def run() -> None:
@@ -30,7 +31,7 @@ def claim_job() -> dict[str, Any] | None:
     with connect() as db:
         row = db.execute(
             """
-            select jobs.*, submissions.s3_key as submission_s3_key, datasets.s3_key as dataset_s3_key
+            select jobs.*, submissions.owner_id, submissions.s3_key as submission_s3_key, datasets.s3_key as dataset_s3_key
             from jobs
             join submissions on submissions.id = jobs.submission_id
             join datasets on datasets.id = jobs.dataset_id
@@ -64,16 +65,23 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         script = render_container_script()
         (root / "run.sh").write_text(script, encoding="utf-8")
         os.chmod(root / "run.sh", 0o755)
-        run_docker(root)
+        run_docker(root, job)
 
         evaluation = json.loads((reports_dir / "evaluation.json").read_text(encoding="utf-8"))
         make_zip(work_dir, artifacts_zip)
         artifact_prefix = f"jobs/{job['id']}/artifacts"
+        preview_prefix = f"jobs/{job['id']}/preview"
+        preview_s3_key = None
         upload_s3_file(artifacts_zip, f"{artifact_prefix}.zip", "application/zip")
+        preview_dist = work_dir / "output" / "dist"
+        if (preview_dist / "index.html").exists():
+            upload_s3_directory(preview_dist, preview_prefix)
+            preview_s3_key = f"{preview_prefix}/index.html"
         return {
             "evaluation": evaluation,
             "score": evaluation.get("score"),
             "artifact_s3_prefix": artifact_prefix,
+            "preview_s3_key": preview_s3_key,
         }
 
 
@@ -94,20 +102,29 @@ fi
 """
 
 
-def run_docker(root: Path) -> None:
+def run_docker(root: Path, job: dict[str, Any]) -> None:
     repo_root = Path(__file__).resolve().parents[4]
+    arena_token = create_token(job["owner_id"])
     cmd = [
         "docker",
         "run",
         "--rm",
         "--network",
         settings.evaluator_network,
+        "--add-host",
+        "host.docker.internal:host-gateway",
         "-e",
-        f"VIS_ARENA_SERVER_URL={settings.public_base_url}",
+        f"VIS_ARENA_SERVER_URL={_container_server_url()}",
         "-e",
-        f"VIS_ARENA_API_TOKEN={settings.arena_api_token or ''}",
+        f"VIS_ARENA_API_TOKEN={arena_token}",
         "-e",
-        f"VIS_ARENA_OPENAI_MODEL={os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
+        f"VIS_ARENA_JOB_ID={job['id']}",
+        "-e",
+        f"VIS_ARENA_LLM_PROVIDER={settings.llm_provider}",
+        "-e",
+        f"VIS_ARENA_LLM_MODEL={settings.bedrock_default_model_id if settings.llm_provider == 'bedrock' else os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
+        "-e",
+        f"VIS_ARENA_LLM_MODELS={','.join(settings.bedrock_model_ids) if settings.llm_provider == 'bedrock' else os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
         "-v",
         f"{root}:/arena",
         "-v",
@@ -124,13 +141,19 @@ def run_docker(root: Path) -> None:
         raise RuntimeError(f"Docker evaluation failed with exit {completed.returncode}:\n{completed.stdout[-4000:]}")
 
 
+def _container_server_url() -> str:
+    if settings.public_base_url in {"http://localhost:8000", "http://127.0.0.1:8000"}:
+        return "http://host.docker.internal:8000"
+    return settings.public_base_url
+
+
 def complete_job(job_id: str, result: dict[str, Any]) -> None:
     now = now_iso()
     with connect() as db:
         job = db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone()
         db.execute(
-            "update jobs set status = ?, result_json = ?, artifact_s3_prefix = ?, updated_at = ? where id = ?",
-            ("succeeded", json.dumps(result["evaluation"]), result["artifact_s3_prefix"], now, job_id),
+            "update jobs set status = ?, result_json = ?, artifact_s3_prefix = ?, preview_s3_key = ?, updated_at = ? where id = ?",
+            ("succeeded", json.dumps(result["evaluation"]), result["artifact_s3_prefix"], result["preview_s3_key"], now, job_id),
         )
         scores = [
             row["score"]

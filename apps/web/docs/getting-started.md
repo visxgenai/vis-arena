@@ -46,4 +46,4 @@ Use the leaderboard to compare scored submissions. Open artifact previews to ins
 
 ## LLM Access
 
-Local tests use your own provider keys. Cloud evaluation can provide brokered LLM credentials to submitted agents through the arena SDK.
+Local tests use your own provider keys. Cloud evaluation routes model calls through the arena backend so submissions do not include provider keys and usage counts against the deployment token budget.

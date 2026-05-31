@@ -14,7 +14,11 @@ from typing import Any
 from openai import OpenAI
 
 
-DEFAULT_MODEL = os.environ.get("VIS_ARENA_OPENAI_MODEL", "gpt-5.5")
+DEFAULT_MODEL = (
+    os.environ.get("VIS_ARENA_LLM_MODEL")
+    or os.environ.get("VIS_ARENA_OPENAI_MODEL")
+    or "gpt-4.1-mini"
+)
 MAX_STEPS = int(os.environ.get("VIS_ARENA_AGENT_STEPS", "20"))
 
 
@@ -41,6 +45,9 @@ def main() -> None:
     info = sub.add_parser("info")
     info.add_argument("--output", required=True)
 
+    models = sub.add_parser("models")
+    models.add_argument("--output")
+
     gen = sub.add_parser("generate")
     gen.add_argument("--task", required=True)
     gen.add_argument("--data-dir", required=True)
@@ -56,6 +63,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "info":
         write_json(Path(args.output), info_payload())
+    elif args.command == "models":
+        payload = models_payload()
+        if args.output:
+            write_json(Path(args.output), payload)
+        else:
+            print(json.dumps(payload, indent=2))
     elif args.command == "generate":
         run_generate(args)
     elif args.command == "evaluate":
@@ -68,8 +81,17 @@ def info_payload() -> dict[str, Any]:
         "name": "python-openai-template",
         "version": "0.2.0",
         "commands": ["generate", "evaluate"],
-        "providers": ["openai"],
-        "notes": "Simple OpenAI tool-loop agent with bash and Playwright tools.",
+        "providers": ["openai", "arena-cloud"],
+        "notes": "Simple LLM tool-loop agent with bash and Playwright tools.",
+    }
+
+
+def models_payload() -> dict[str, Any]:
+    models = [model.strip() for model in os.environ.get("VIS_ARENA_LLM_MODELS", DEFAULT_MODEL).split(",") if model.strip()]
+    return {
+        "default_model": DEFAULT_MODEL,
+        "available_models": models,
+        "select_model": "Set VIS_ARENA_LLM_MODEL to one of available_models.",
     }
 
 
@@ -91,7 +113,7 @@ DIST_DIR={dist_dir}
 Task:
 {task_text}
 """
-    result = run_agent(GENERATION_PROMPT, prompt, tool_root=output_dir)
+    result = run_agent(GENERATION_PROMPT, prompt, tool_root=output_dir, purpose="generation")
     if not (dist_dir / "index.html").exists():
         raise SystemExit("Generation failed: dist/index.html was not created")
     write_json(
@@ -125,13 +147,13 @@ ENTRYPOINT={(Path(args.dist_dir).resolve() / "index.html").as_uri()}
 Task and rubric:
 {task_text}
 """
-    result = run_agent(EVALUATION_PROMPT, prompt, tool_root=report_dir)
+    result = run_agent(EVALUATION_PROMPT, prompt, tool_root=report_dir, purpose="evaluation")
     report = normalize_evaluation(result, extract_task_id(task_text))
     write_json(output, report)
 
 
-def run_agent(system_prompt: str, user_prompt: str, tool_root: Path) -> dict[str, Any]:
-    client = make_openai_client()
+def run_agent(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str) -> dict[str, Any]:
+    client = make_llm_client(purpose)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -178,47 +200,68 @@ def run_agent(system_prompt: str, user_prompt: str, tool_root: Path) -> dict[str
     ]
 
     for _ in range(MAX_STEPS):
-        response = client.chat.completions.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
-        message = response.choices[0].message
-        messages.append(message.model_dump(exclude_none=True))
-        if not message.tool_calls:
+        message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
+        messages.append(message)
+        if not message.get("tool_calls"):
             messages.append({"role": "user", "content": "Continue using tools, or call finish with the final JSON."})
             continue
-        for call in message.tool_calls:
-            args = json.loads(call.function.arguments or "{}")
-            if call.function.name == "finish":
+        for call in message["tool_calls"]:
+            function = call.get("function") or {}
+            args = json.loads(function.get("arguments") or "{}")
+            if function.get("name") == "finish":
                 return args.get("result") or {}
-            if call.function.name == "bash":
+            if function.get("name") == "bash":
                 output = run_bash(args["command"], Path(args.get("cwd") or tool_root))
-            elif call.function.name == "playwright":
+            elif function.get("name") == "playwright":
                 output = run_playwright(args["script"], Path(args.get("cwd") or tool_root))
             else:
-                output = f"Unknown tool: {call.function.name}"
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": output[:12000]})
+                output = f"Unknown tool: {function.get('name')}"
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
     raise SystemExit(f"Agent exceeded {MAX_STEPS} steps without finishing")
 
 
-def make_openai_client() -> OpenAI:
-    # In cloud evaluation the backend injects VIS_ARENA_API_TOKEN. The agent uses
-    # it to ask the arena SDK for a short-lived OpenAI-compatible token/proxy.
-    # For local testing, participants should set OPENAI_API_KEY themselves.
-    if os.environ.get("VIS_ARENA_API_TOKEN") and not os.environ.get("OPENAI_API_KEY"):
-        try:
-            from vis_arena_sdk import VisArenaClient
+class OpenAIChatClient:
+    def __init__(self) -> None:
+        self.client = OpenAI()
 
-            arena = VisArenaClient(
-                base_url=os.environ.get("VIS_ARENA_SERVER_URL", "http://host.docker.internal:8000"),
-                token=os.environ["VIS_ARENA_API_TOKEN"],
-            )
-            token = arena.request_llm_token("openai", DEFAULT_MODEL, purpose="arena-run")
-            if token.base_url:
-                return OpenAI(api_key=token.access_token, base_url=token.base_url)
-            return OpenAI(api_key=token.access_token)
-        except Exception as exc:
-            raise SystemExit(f"Could not obtain cloud OpenAI token from arena backend: {exc}") from exc
+    def create(self, *, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: str) -> dict[str, Any]:
+        response = self.client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
+        return response.choices[0].message.model_dump(exclude_none=True)
+
+
+class ArenaChatClient:
+    def __init__(self, purpose: str) -> None:
+        from vis_arena_sdk import VisArenaClient
+
+        self.job_id = os.environ["VIS_ARENA_JOB_ID"]
+        self.purpose = purpose
+        self.client = VisArenaClient(
+            base_url=os.environ.get("VIS_ARENA_SERVER_URL", "http://host.docker.internal:8000"),
+            token=os.environ["VIS_ARENA_API_TOKEN"],
+            timeout=180.0,
+        )
+
+    def create(self, *, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: str) -> dict[str, Any]:
+        response = self.client.create_llm_message(
+            job_id=self.job_id,
+            messages=messages,
+            tools=tools,
+            tool_choice=tool_choice,
+            model=model,
+            purpose=self.purpose,
+        )
+        return response.message
+
+
+def make_llm_client(purpose: str) -> OpenAIChatClient | ArenaChatClient:
+    # In cloud evaluation the backend injects VIS_ARENA_API_TOKEN. The agent uses
+    # it to route model calls through the arena backend for cost tracking.
+    # For local testing, participants should set OPENAI_API_KEY themselves.
+    if os.environ.get("VIS_ARENA_API_TOKEN") and os.environ.get("VIS_ARENA_JOB_ID") and not os.environ.get("OPENAI_API_KEY"):
+        return ArenaChatClient(purpose)
     if not os.environ.get("OPENAI_API_KEY"):
         raise SystemExit("Set OPENAI_API_KEY for local testing, or run inside cloud evaluation with VIS_ARENA_API_TOKEN.")
-    return OpenAI()
+    return OpenAIChatClient()
 
 
 def run_bash(command: str, cwd: Path) -> str:

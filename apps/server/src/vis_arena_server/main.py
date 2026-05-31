@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import os
+import posixpath
+import re
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
-from fastapi import Depends, HTTPException, FastAPI
+import jwt
+from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .auth import authenticate, create_token, create_user, current_user
 from .db import connect, decode_json, init_db, row_to_dict
-from .schemas import AuthResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
+from .llm import create_llm_message
+from .schemas import AuthResponse, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
 from .settings import settings
-from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get
+from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get, read_s3_file
 
 app = FastAPI(title="Vis Arena API", version="0.1.0")
 app.add_middleware(
@@ -84,7 +89,12 @@ def me(user: dict = Depends(current_user)) -> dict:
 def list_datasets(user: dict = Depends(current_user)) -> dict:
     with connect() as db:
         rows = db.execute(
-            "select id, name, visibility, task_count, created_at from datasets where owner_id = ? or visibility = 'public' order by created_at desc",
+            """
+            select id, name, visibility, task_count, created_at
+            from datasets
+            where (owner_id = ? or visibility = 'public') and task_count > 0
+            order by created_at desc
+            """,
             (user["id"],),
         ).fetchall()
     return {"items": [dict(row) for row in rows]}
@@ -155,10 +165,46 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
     _require_submission_access(submission_id, user["id"])
     with connect() as db:
         rows = db.execute(
-            "select id, submission_id, dataset_id, task_id, status, result_json, artifact_s3_prefix, error, created_at, updated_at from jobs where submission_id = ? order by created_at desc",
+            "select id, submission_id, dataset_id, task_id, status, result_json, artifact_s3_prefix, preview_s3_key, error, created_at, updated_at from jobs where submission_id = ? order by created_at desc",
             (submission_id,),
         ).fetchall()
     return {"items": [{**dict(row), "result": decode_json(row["result_json"], None)} for row in rows]}
+
+
+@app.get("/v1/submissions/{submission_id}/llm-usage")
+def get_submission_llm_usage(submission_id: str, user: dict = Depends(current_user)) -> dict:
+    _require_submission_access(submission_id, user["id"])
+    with connect() as db:
+        summary = db.execute(
+            """
+            select
+              count(*) as request_count,
+              coalesce(sum(input_tokens), 0) as input_tokens,
+              coalesce(sum(output_tokens), 0) as output_tokens,
+              coalesce(sum(total_tokens), 0) as total_tokens,
+              sum(estimated_cost_usd) as estimated_cost_usd
+            from llm_usage
+            where submission_id = ?
+            """,
+            (submission_id,),
+        ).fetchone()
+        by_job = db.execute(
+            """
+            select
+              job_id,
+              count(*) as request_count,
+              coalesce(sum(input_tokens), 0) as input_tokens,
+              coalesce(sum(output_tokens), 0) as output_tokens,
+              coalesce(sum(total_tokens), 0) as total_tokens,
+              sum(estimated_cost_usd) as estimated_cost_usd
+            from llm_usage
+            where submission_id = ?
+            group by job_id
+            order by max(created_at) desc
+            """,
+            (submission_id,),
+        ).fetchall()
+    return {"summary": dict(summary), "jobs": [dict(row) for row in by_job]}
 
 
 @app.get("/v1/jobs/{job_id}/artifacts")
@@ -175,6 +221,43 @@ def get_job_artifacts(job_id: str, user: dict = Depends(current_user)) -> dict:
     if row is None or not row["artifact_s3_prefix"]:
         raise HTTPException(status_code=404, detail="Artifacts not found")
     return presigned_get(f"{row['artifact_s3_prefix']}.zip")
+
+
+@app.get("/v1/jobs/{job_id}/preview-url")
+def get_job_preview_url(job_id: str, request: Request, user: dict = Depends(current_user)) -> dict:
+    with connect() as db:
+        row = db.execute(
+            """
+            select jobs.preview_s3_key
+            from jobs join submissions on submissions.id = jobs.submission_id
+            where jobs.id = ? and submissions.owner_id = ?
+            """,
+            (job_id, user["id"]),
+        ).fetchone()
+    if row is None or not row["preview_s3_key"]:
+        raise HTTPException(status_code=404, detail="Preview not found")
+    token = _create_preview_token(job_id)
+    url = str(request.url_for("serve_job_preview", job_id=job_id, asset_path="index.html"))
+    return {"url": f"{url}?token={token}", "expires_in": settings.presign_ttl_seconds}
+
+
+@app.get("/v1/jobs/{job_id}/preview/{asset_path:path}")
+def serve_job_preview(job_id: str, asset_path: str, token: str) -> Response:
+    _verify_preview_token(token, job_id)
+    asset_path = _safe_preview_asset_path(asset_path or "index.html")
+    with connect() as db:
+        row = db.execute("select preview_s3_key from jobs where id = ?", (job_id,)).fetchone()
+    if row is None or not row["preview_s3_key"]:
+        raise HTTPException(status_code=404, detail="Preview not found")
+    preview_prefix = row["preview_s3_key"].rsplit("/", 1)[0]
+    body, content_type = read_s3_file(f"{preview_prefix}/{asset_path}")
+    if content_type.startswith("text/html"):
+        text = body.decode("utf-8", errors="replace")
+        body = _rewrite_preview_asset_urls(text, job_id, token).encode("utf-8")
+    elif content_type.startswith("text/css"):
+        text = body.decode("utf-8", errors="replace")
+        body = _rewrite_preview_css_urls(text, job_id, token).encode("utf-8")
+    return Response(content=body, media_type=content_type)
 
 
 @app.get("/v1/leaderboard")
@@ -211,6 +294,11 @@ def llm_token(payload: LLMTokenRequest, user: dict = Depends(current_user)) -> d
     }
 
 
+@app.post("/v1/llm/messages", response_model=LLMMessageResponse)
+def llm_messages(payload: LLMMessageRequest, user: dict = Depends(current_user)) -> dict:
+    return create_llm_message(payload, user["id"])
+
+
 def _require_dataset_access(dataset_id: str, user_id: str) -> dict:
     with connect() as db:
         row = db.execute(
@@ -233,6 +321,71 @@ def _require_submission_access(submission_id: str, user_id: str) -> dict:
     if not submission:
         raise HTTPException(status_code=404, detail="Submission not found")
     return submission
+
+
+def _create_preview_token(job_id: str) -> str:
+    payload = {
+        "job": job_id,
+        "scope": "artifact-preview",
+        "exp": datetime.now(UTC) + timedelta(seconds=settings.presign_ttl_seconds),
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
+def _verify_preview_token(token: str, job_id: str) -> None:
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid preview token") from exc
+    if payload.get("scope") != "artifact-preview" or payload.get("job") != job_id:
+        raise HTTPException(status_code=401, detail="Invalid preview token")
+
+
+def _safe_preview_asset_path(asset_path: str) -> str:
+    normalized = posixpath.normpath(asset_path).lstrip("/")
+    if normalized == "." or normalized.startswith("../") or "/../" in f"/{normalized}/":
+        raise HTTPException(status_code=400, detail="Unsafe preview path")
+    return normalized
+
+
+def _rewrite_preview_asset_urls(html: str, job_id: str, token: str) -> str:
+    return re.sub(
+        r"""(?P<attr>\b(?:src|href)=)(?P<quote>["'])(?P<url>[^"']+)(?P=quote)""",
+        lambda match: _rewrite_attr_match(match, job_id, token),
+        html,
+    )
+
+
+def _rewrite_preview_css_urls(css: str, job_id: str, token: str) -> str:
+    return re.sub(
+        r"""url\((?P<quote>["']?)(?P<url>[^)"']+)(?P=quote)\)""",
+        lambda match: f"url({match.group('quote')}{_preview_asset_url(match.group('url'), job_id, token)}{match.group('quote')})",
+        css,
+    )
+
+
+def _rewrite_attr_match(match: re.Match[str], job_id: str, token: str) -> str:
+    url = _preview_asset_url(match.group("url"), job_id, token)
+    return f"{match.group('attr')}{match.group('quote')}{url}{match.group('quote')}"
+
+
+def _preview_asset_url(url: str, job_id: str, token: str) -> str:
+    if _is_external_preview_url(url):
+        return url
+    path, fragment = url.split("#", 1) if "#" in url else (url, "")
+    path = path.split("?", 1)[0]
+    rewritten = f"/v1/jobs/{job_id}/preview/{quote(_safe_preview_asset_path(path))}?token={quote(token)}"
+    return f"{rewritten}#{fragment}" if fragment else rewritten
+
+
+def _is_external_preview_url(url: str) -> bool:
+    lowered = url.lower()
+    return (
+        not url
+        or lowered.startswith(("http://", "https://", "data:", "blob:", "mailto:", "tel:", "javascript:"))
+        or lowered.startswith("//")
+        or lowered.startswith("#")
+    )
 
 
 def run() -> None:

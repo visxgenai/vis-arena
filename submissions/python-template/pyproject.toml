@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "vis-arena-python-template"
 version = "0.2.0"
-description = "OpenAI LLM template Vis Arena submission agent"
+description = "LLM template Vis Arena submission agent"
 requires-python = ">=3.11"
 dependencies = [
   "openai>=1.30.0",

@@ -56,4 +56,19 @@ Package your agent as a ZIP and submit it:
 vis-arena submissions upload agent.zip --name my-first-agent
 ```
 
-Cloud evaluation can provide brokered LLM access to submitted agents. Local tests still require your own provider key, such as `OPENAI_API_KEY`.
+Cloud evaluation routes submitted-agent LLM calls through the arena backend so provider keys are not packaged in submissions and usage can be tracked against the submission token budget. Local tests still require your own provider key, such as `OPENAI_API_KEY`.
+
+Deployments expose Bedrock profiles with `VIS_ARENA_BEDROCK_MODEL_IDS`; the first model in that comma-separated list is the default. Submitted agents can choose an enabled model by setting `VIS_ARENA_LLM_MODEL`, and every model call is recorded with the actual model id and token usage.
+
+Check usage for a submitted run:
+
+```bash
+vis-arena submissions usage SUBMISSION_ID
+```
+
+List task-level results and get an HTML artifact preview link:
+
+```bash
+vis-arena submissions results SUBMISSION_ID
+vis-arena results preview RESULT_ID
+```
