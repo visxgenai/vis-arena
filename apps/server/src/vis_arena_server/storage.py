@@ -10,6 +10,7 @@ from typing import Any
 
 import boto3
 import yaml
+from botocore.exceptions import ClientError
 from botocore.client import Config
 from fastapi import HTTPException
 
@@ -55,7 +56,13 @@ def presigned_get(key: str) -> dict[str, Any]:
 
 def download_s3(key: str, target: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
-    s3_client().download_file(settings.s3_bucket, key, str(target))
+    try:
+        s3_client().download_file(settings.s3_bucket, key, str(target))
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=400, detail=f"S3 object not found: {key}") from exc
+        raise
 
 
 def upload_s3_file(path: Path, key: str, content_type: str = "application/octet-stream") -> None:
