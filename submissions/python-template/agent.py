@@ -207,13 +207,19 @@ def run_agent(system_prompt: str, user_prompt: str, tool_root: Path, purpose: st
             continue
         for call in message["tool_calls"]:
             function = call.get("function") or {}
-            args = json.loads(function.get("arguments") or "{}")
+            try:
+                args = json.loads(function.get("arguments") or "{}")
+            except json.JSONDecodeError as exc:
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": f"Tool argument JSON error: {exc}"})
+                continue
             if function.get("name") == "finish":
                 return args.get("result") or {}
             if function.get("name") == "bash":
-                output = run_bash(args["command"], Path(args.get("cwd") or tool_root))
+                command = args.get("command")
+                output = run_bash(command, Path(args.get("cwd") or tool_root)) if command else "Tool error: bash requires a command string."
             elif function.get("name") == "playwright":
-                output = run_playwright(args["script"], Path(args.get("cwd") or tool_root))
+                script = args.get("script")
+                output = run_playwright(script, Path(args.get("cwd") or tool_root)) if script else "Tool error: playwright requires a script string."
             else:
                 output = f"Unknown tool: {function.get('name')}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})

@@ -37,7 +37,7 @@ class VisArenaClient:
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, follow_redirects=True, headers=self._headers())
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout, follow_redirects=True, headers=self._headers(), trust_env=False)
 
     def close(self) -> None:
         self._client.close()

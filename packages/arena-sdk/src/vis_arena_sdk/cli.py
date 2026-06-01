@@ -137,6 +137,18 @@ def version(server_url: Optional[str] = None) -> None:
         client.close()
 
 
+@app.command()
+def submit(
+    path: Path,
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="Submission name. Defaults to the file or folder name."),
+    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Dataset to run this submission against."),
+    server_url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
+    """Upload an agent submission."""
+    _upload_submission(path, name=name or path.stem, dataset_id=dataset_id, server_url=server_url, token=token)
+
+
 @datasets_app.command("list")
 def datasets_list(server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     """List datasets visible to the authenticated user."""
@@ -173,6 +185,10 @@ def datasets_download(dataset_id: str, output: Path, server_url: Optional[str] =
 @submissions_app.command("upload")
 def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     """Upload an agent submission ZIP."""
+    _upload_submission(path, name=name, dataset_id=dataset_id, server_url=server_url, token=token)
+
+
+def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     client = _client(server_url, token)
     try:
         submission = client.upload_submission(path, name=name, dataset_id=dataset_id)

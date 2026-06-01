@@ -41,7 +41,7 @@ Source inspection should be reserved for behavior that is hard to confirm in the
 ## Submit
 
 ```bash
-vis-arena submissions upload agent.zip --name my-agent
+vis-arena submit agent.zip --name my-agent --dataset-id DATASET_ID
 ```
 
 Do not include API keys in the ZIP. Local testing uses your own provider keys; cloud evaluation routes LLM calls through the arena backend, tracks token usage per submission, and enforces the deployment token budget.

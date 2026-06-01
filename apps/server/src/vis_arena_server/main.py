@@ -9,6 +9,7 @@ from urllib.parse import quote
 import jwt
 from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from .auth import authenticate, create_token, create_user, current_user
 from .db import connect, decode_json, init_db, row_to_dict
@@ -236,9 +237,18 @@ def get_job_preview_url(job_id: str, request: Request, user: dict = Depends(curr
         ).fetchone()
     if row is None or not row["preview_s3_key"]:
         raise HTTPException(status_code=404, detail="Preview not found")
+    return {"url": str(request.url_for("redirect_job_preview", job_id=job_id)), "expires_in": settings.presign_ttl_seconds}
+
+
+@app.get("/v1/jobs/{job_id}/preview")
+def redirect_job_preview(job_id: str, request: Request) -> RedirectResponse:
+    with connect() as db:
+        row = db.execute("select preview_s3_key from jobs where id = ?", (job_id,)).fetchone()
+    if row is None or not row["preview_s3_key"]:
+        raise HTTPException(status_code=404, detail="Preview not found")
     token = _create_preview_token(job_id)
     url = str(request.url_for("serve_job_preview", job_id=job_id, asset_path="index.html"))
-    return {"url": f"{url}?token={token}", "expires_in": settings.presign_ttl_seconds}
+    return RedirectResponse(f"{url}?token={token}", status_code=302)
 
 
 @app.get("/v1/jobs/{job_id}/preview/{asset_path:path}")

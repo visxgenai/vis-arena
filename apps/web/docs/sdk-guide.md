@@ -53,7 +53,7 @@ vis-arena datasets download builtin/monthly-sales --output monthly-sales.zip
 Package your agent as a ZIP and submit it:
 
 ```bash
-vis-arena submissions upload agent.zip --name my-first-agent
+vis-arena submit agent.zip --name my-first-agent --dataset-id DATASET_ID
 ```
 
 Cloud evaluation routes submitted-agent LLM calls through the arena backend so provider keys are not packaged in submissions and usage can be tracked against the submission token budget. Local tests still require your own provider key, such as `OPENAI_API_KEY`.

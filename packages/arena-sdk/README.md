@@ -3,10 +3,10 @@
 Python client and CLI for Vis Arena.
 
 ```bash
-uv run --with-editable . vis-arena login --email user@example.com --password secret --server-url http://localhost:8000
+uv run --with-editable . vis-arena login user@example.com secret --server-url http://localhost:8000
 uv run --with-editable . vis-arena datasets list
 uv run --with-editable . vis-arena datasets upload examples/tasks/monthly-sales --name monthly-sales-v1
-uv run --with-editable . vis-arena submissions upload submission.zip --name my-agent --dataset-id <dataset-id>
+uv run --with-editable . vis-arena submit submission.zip --name my-agent --dataset-id <dataset-id>
 ```
 
 Uploads and downloads use backend-issued presigned S3 URLs; the SDK uploads ZIP bytes directly to S3, then finalizes the record with the API.

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -59,6 +60,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
 
         download_s3(job["submission_s3_key"], submission_zip)
         safe_extract_zip(submission_zip, submission_dir)
+        copy_sdk(root / "sdk")
         copy_task_data(job["dataset_s3_key"], job["task_id"], work_dir)
         reports_dir.mkdir(parents=True, exist_ok=True)
 
@@ -85,9 +87,20 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def copy_sdk(target: Path) -> None:
+    repo_root = Path(__file__).resolve().parents[4]
+    shutil.copytree(
+        repo_root / "packages" / "arena-sdk",
+        target,
+        ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.egg-info"),
+    )
+
+
 def render_container_script() -> str:
     return """#!/usr/bin/env bash
 set -euo pipefail
+mkdir -p /arena/home /arena/.uv-cache /arena/.venv
+export PATH="/arena/home/.local/bin:$PATH"
 cd /arena/submission
 if [ -f pyproject.toml ]; then
   python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
@@ -103,7 +116,6 @@ fi
 
 
 def run_docker(root: Path, job: dict[str, Any]) -> None:
-    repo_root = Path(__file__).resolve().parents[4]
     arena_token = create_token(job["owner_id"])
     cmd = [
         "docker",
@@ -111,8 +123,16 @@ def run_docker(root: Path, job: dict[str, Any]) -> None:
         "--rm",
         "--network",
         settings.evaluator_network,
+        "--user",
+        f"{os.getuid()}:{os.getgid()}",
         "--add-host",
         "host.docker.internal:host-gateway",
+        "-e",
+        "HOME=/arena/home",
+        "-e",
+        "UV_CACHE_DIR=/arena/.uv-cache",
+        "-e",
+        "UV_PROJECT_ENVIRONMENT=/arena/.venv",
         "-e",
         f"VIS_ARENA_SERVER_URL={_container_server_url()}",
         "-e",
@@ -127,8 +147,6 @@ def run_docker(root: Path, job: dict[str, Any]) -> None:
         f"VIS_ARENA_LLM_MODELS={','.join(settings.bedrock_model_ids) if settings.llm_provider == 'bedrock' else os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
         "-v",
         f"{root}:/arena",
-        "-v",
-        f"{repo_root / 'packages' / 'arena-sdk'}:/arena/sdk:ro",
         "-w",
         "/arena",
         settings.evaluator_image,

@@ -35,7 +35,7 @@ Run your agent against the sample task before uploading.
 Upload an agent bundle as a `.zip`. The bundle must contain `agent.py` or `agent`, plus any dependency files it needs.
 
 ```bash
-vis-arena submissions upload agent.zip --name my-agent
+vis-arena submit agent.zip --name my-agent --dataset-id DATASET_ID
 ```
 
 You can also upload the ZIP from the web app.
