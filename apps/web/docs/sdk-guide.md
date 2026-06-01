@@ -72,3 +72,5 @@ List task-level results and get an HTML artifact preview link:
 vis-arena submissions results SUBMISSION_ID
 vis-arena results preview RESULT_ID
 ```
+
+Task-level results include the submitted-agent runtime once the job starts running. The backend also persists phase runtime logs, `agent-info.json`, the evaluation report, and generation/evaluation trajectory JSONL files when trajectory capture is enabled.

@@ -166,10 +166,25 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
     _require_submission_access(submission_id, user["id"])
     with connect() as db:
         rows = db.execute(
-            "select id, submission_id, dataset_id, task_id, status, result_json, artifact_s3_prefix, preview_s3_key, error, created_at, updated_at from jobs where submission_id = ? order by created_at desc",
+            """
+            select id, submission_id, dataset_id, task_id, status, result_json,
+                   artifact_s3_prefix, preview_s3_key, generation_s3_prefix,
+                   evaluation_s3_prefix, agent_info_s3_key,
+                   generation_trajectory_s3_key, evaluation_trajectory_s3_key,
+                   evaluation_report_s3_key, started_at,
+                   completed_at, run_seconds, error, created_at, updated_at
+            from jobs
+            where submission_id = ?
+            order by created_at desc
+            """,
             (submission_id,),
         ).fetchall()
-    return {"items": [{**dict(row), "result": decode_json(row["result_json"], None)} for row in rows]}
+    items = []
+    for row in rows:
+        item = dict(row)
+        item["result"] = decode_json(item.pop("result_json"), None)
+        items.append(item)
+    return {"items": items}
 
 
 @app.get("/v1/submissions/{submission_id}/llm-usage")

@@ -45,3 +45,5 @@ vis-arena submit agent.zip --name my-agent --dataset-id DATASET_ID
 ```
 
 Do not include API keys in the ZIP. Local testing uses your own provider keys; cloud evaluation routes LLM calls through the arena backend, tracks token usage per submission, and enforces the deployment token budget.
+
+Cloud evaluation records the submitted-agent runtime separately from queue delay. It stores phase logs, the `info` command output as `agent-info.json`, the evaluation report, and generation/evaluation trajectories by default. Trajectories contain visible runtime events such as phase boundaries and generated file manifests, plus any explicit trace files your agent writes; provider-hidden reasoning is not available to the arena.
