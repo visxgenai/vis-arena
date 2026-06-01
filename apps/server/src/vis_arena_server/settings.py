@@ -63,6 +63,7 @@ class Settings:
     evaluator_image: str = os.environ.get("VIS_ARENA_EVALUATOR_IMAGE", "mcr.microsoft.com/playwright/python:v1.52.0-noble")
     evaluator_network: str = os.environ.get("VIS_ARENA_EVALUATOR_NETWORK", "bridge")
     evaluator_timeout_seconds: int = int(os.environ.get("VIS_ARENA_EVALUATOR_TIMEOUT_SECONDS", "1800"))
+    record_trajectory: bool = os.environ.get("VIS_ARENA_RECORD_TRAJECTORY", "true").lower() == "true"
     arena_api_token: str | None = os.environ.get("VIS_ARENA_WORKER_API_TOKEN")
 
 

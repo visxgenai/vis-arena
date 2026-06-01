@@ -226,7 +226,9 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
     try:
         for result in client.list_submission_jobs(submission_id):
             preview = "preview" if result.get("preview_s3_key") else ""
-            typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{preview}")
+            run_seconds = result.get("run_seconds")
+            duration = "" if run_seconds is None else f"{float(run_seconds):.1f}s"
+            typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
     finally:
         client.close()
 

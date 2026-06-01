@@ -67,12 +67,16 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         script = render_container_script()
         (root / "run.sh").write_text(script, encoding="utf-8")
         os.chmod(root / "run.sh", 0o755)
-        run_docker(root, job)
+        runtime = run_docker(root, job)
+        runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
+        update_job_runtime_metadata(job["id"], runtime, runtime_files)
+        if runtime["returncode"] != 0:
+            raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
-        evaluation = json.loads((reports_dir / "evaluation.json").read_text(encoding="utf-8"))
+        evaluation = json.loads((reports_dir / "evaluation" / "report.json").read_text(encoding="utf-8"))
         make_zip(work_dir, artifacts_zip)
-        artifact_prefix = f"jobs/{job['id']}/artifacts"
-        preview_prefix = f"jobs/{job['id']}/preview"
+        artifact_prefix = f"jobs/{job['id']}/generation/artifacts"
+        preview_prefix = f"jobs/{job['id']}/generation/preview"
         preview_s3_key = None
         upload_s3_file(artifacts_zip, f"{artifact_prefix}.zip", "application/zip")
         preview_dist = work_dir / "output" / "dist"
@@ -84,6 +88,8 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             "score": evaluation.get("score"),
             "artifact_s3_prefix": artifact_prefix,
             "preview_s3_key": preview_s3_key,
+            **runtime,
+            **runtime_files,
         }
 
 
@@ -99,23 +105,112 @@ def copy_sdk(target: Path) -> None:
 def render_container_script() -> str:
     return """#!/usr/bin/env bash
 set -euo pipefail
-mkdir -p /arena/home /arena/.uv-cache /arena/.venv
+mkdir -p /arena/home /arena/.uv-cache /arena/.venv /arena/reports/generation /arena/reports/evaluation
 export PATH="/arena/home/.local/bin:$PATH"
+trace_event() {
+  if [ "${VIS_ARENA_RECORD_TRAJECTORY:-true}" != "true" ]; then
+    return 0
+  fi
+  python - "$1" "$2" "$3" "${4:-}" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+path, event_type, phase, step = sys.argv[1:5]
+event = {
+    "type": event_type,
+    "phase": phase,
+    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+}
+if step:
+    event["step"] = step
+pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+with open(path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, separators=(",", ":")) + "\\n")
+PY
+}
+trace_manifest() {
+  if [ "${VIS_ARENA_RECORD_TRAJECTORY:-true}" != "true" ]; then
+    return 0
+  fi
+  python - "$1" "$2" "$3" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+trace_path = pathlib.Path(sys.argv[1])
+phase = sys.argv[2]
+output_root = pathlib.Path(sys.argv[3])
+files = []
+if output_root.exists():
+    for path in sorted(output_root.rglob("*")):
+        if path.is_file():
+            files.append({"path": path.relative_to(output_root).as_posix(), "size_bytes": path.stat().st_size})
+event = {
+    "type": "file_manifest",
+    "phase": phase,
+    "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+    "files": files,
+}
+trace_path.parent.mkdir(parents=True, exist_ok=True)
+with open(trace_path, "a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, separators=(",", ":")) + "\\n")
+PY
+}
+run_phase() {
+  phase="$1"
+  step="$2"
+  shift 2
+  phase_dir="/arena/reports/${phase}"
+  log="${phase_dir}/runtime.log"
+  trace="${phase_dir}/trajectory.jsonl"
+  mkdir -p "$phase_dir"
+  if [ ! -f "$log" ]; then
+    echo "[$(date -Iseconds)] phase_start ${phase}" > "$log"
+    trace_event "$trace" phase_start "$phase"
+  fi
+  echo "[$(date -Iseconds)] step_start ${phase}.${step}" >> "$log"
+  trace_event "$trace" step_start "$phase" "$step"
+  set +e
+  "$@" >> "$log" 2>&1
+  code=$?
+  set -e
+  echo "[$(date -Iseconds)] step_end ${phase}.${step} exit_code=${code}" >> "$log"
+  trace_event "$trace" step_end "$phase" "$step"
+  if [ "$phase" = "generation" ] && [ "$step" = "generate" ]; then
+    trace_manifest "$trace" generation /arena/work/output
+  fi
+  return "$code"
+}
+finish_phase() {
+  phase="$1"
+  phase_dir="/arena/reports/${phase}"
+  log="${phase_dir}/runtime.log"
+  trace="${phase_dir}/trajectory.jsonl"
+  echo "[$(date -Iseconds)] phase_end ${phase}" >> "$log"
+  trace_event "$trace" phase_end "$phase"
+}
 cd /arena/submission
 if [ -f pyproject.toml ]; then
   python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
-  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
-  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation.json
+  run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
+  run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  finish_phase generation
+  run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+  finish_phase evaluation
 else
-  ./agent info --output /arena/work/agent-info.json
-  ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation.json
+  run_phase generation info ./agent info --output /arena/work/agent-info.json
+  run_phase generation generate ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  finish_phase generation
+  run_phase evaluation evaluate ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+  finish_phase evaluation
 fi
 """
 
 
-def run_docker(root: Path, job: dict[str, Any]) -> None:
+def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
     arena_token = create_token(job["owner_id"])
     cmd = [
         "docker",
@@ -133,6 +228,8 @@ def run_docker(root: Path, job: dict[str, Any]) -> None:
         "UV_CACHE_DIR=/arena/.uv-cache",
         "-e",
         "UV_PROJECT_ENVIRONMENT=/arena/.venv",
+        "-e",
+        f"VIS_ARENA_RECORD_TRAJECTORY={'true' if settings.record_trajectory else 'false'}",
         "-e",
         f"VIS_ARENA_SERVER_URL={_container_server_url()}",
         "-e",
@@ -153,10 +250,72 @@ def run_docker(root: Path, job: dict[str, Any]) -> None:
         "bash",
         "/arena/run.sh",
     ]
-    completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=settings.evaluator_timeout_seconds)
-    (root / "reports" / "docker.log").write_text(completed.stdout, encoding="utf-8")
-    if completed.returncode != 0:
-        raise RuntimeError(f"Docker evaluation failed with exit {completed.returncode}:\n{completed.stdout[-4000:]}")
+    started_at = now_iso()
+    started = time.monotonic()
+    try:
+        completed = subprocess.run(cmd, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=settings.evaluator_timeout_seconds)
+        output = completed.stdout
+        returncode = completed.returncode
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+        output += f"\nDocker evaluation timed out after {settings.evaluator_timeout_seconds} seconds."
+        returncode = 124
+    completed_at = now_iso()
+    run_seconds = round(time.monotonic() - started, 3)
+    (root / "reports" / "docker.log").write_text(output, encoding="utf-8")
+    return {
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "run_seconds": run_seconds,
+        "returncode": returncode,
+        "log_tail": output[-4000:],
+    }
+
+
+def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict[str, str | None]:
+    generation_s3_prefix = f"jobs/{job_id}/generation"
+    evaluation_s3_prefix = f"jobs/{job_id}/evaluation"
+    agent_info_s3_key = None
+    generation_trajectory_s3_key = None
+    evaluation_trajectory_s3_key = None
+    evaluation_report_s3_key = None
+
+    generation_log = reports_dir / "generation" / "runtime.log"
+    if generation_log.exists():
+        upload_s3_file(generation_log, f"{generation_s3_prefix}/runtime.log", "text/plain")
+
+    generation_trajectory = reports_dir / "generation" / "trajectory.jsonl"
+    if generation_trajectory.exists():
+        generation_trajectory_s3_key = f"{generation_s3_prefix}/trajectory.jsonl"
+        upload_s3_file(generation_trajectory, generation_trajectory_s3_key, "application/x-ndjson")
+
+    agent_info = work_dir / "agent-info.json"
+    if agent_info.exists():
+        agent_info_s3_key = f"{generation_s3_prefix}/agent-info.json"
+        upload_s3_file(agent_info, agent_info_s3_key, "application/json")
+
+    evaluation_log = reports_dir / "evaluation" / "runtime.log"
+    if evaluation_log.exists():
+        upload_s3_file(evaluation_log, f"{evaluation_s3_prefix}/runtime.log", "text/plain")
+
+    evaluation_trajectory = reports_dir / "evaluation" / "trajectory.jsonl"
+    if evaluation_trajectory.exists():
+        evaluation_trajectory_s3_key = f"{evaluation_s3_prefix}/trajectory.jsonl"
+        upload_s3_file(evaluation_trajectory, evaluation_trajectory_s3_key, "application/x-ndjson")
+
+    evaluation_report = reports_dir / "evaluation" / "report.json"
+    if evaluation_report.exists():
+        evaluation_report_s3_key = f"{evaluation_s3_prefix}/report.json"
+        upload_s3_file(evaluation_report, evaluation_report_s3_key, "application/json")
+
+    return {
+        "generation_s3_prefix": generation_s3_prefix,
+        "evaluation_s3_prefix": evaluation_s3_prefix,
+        "agent_info_s3_key": agent_info_s3_key,
+        "generation_trajectory_s3_key": generation_trajectory_s3_key,
+        "evaluation_trajectory_s3_key": evaluation_trajectory_s3_key,
+        "evaluation_report_s3_key": evaluation_report_s3_key,
+    }
 
 
 def _container_server_url() -> str:
@@ -170,8 +329,32 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
     with connect() as db:
         job = db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone()
         db.execute(
-            "update jobs set status = ?, result_json = ?, artifact_s3_prefix = ?, preview_s3_key = ?, updated_at = ? where id = ?",
-            ("succeeded", json.dumps(result["evaluation"]), result["artifact_s3_prefix"], result["preview_s3_key"], now, job_id),
+            """
+            update jobs
+            set status = ?, result_json = ?, artifact_s3_prefix = ?, preview_s3_key = ?,
+                generation_s3_prefix = ?, evaluation_s3_prefix = ?,
+                agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
+                evaluation_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
+                started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                "succeeded",
+                json.dumps(result["evaluation"]),
+                result["artifact_s3_prefix"],
+                result["preview_s3_key"],
+                result["generation_s3_prefix"],
+                result["evaluation_s3_prefix"],
+                result["agent_info_s3_key"],
+                result["generation_trajectory_s3_key"],
+                result["evaluation_trajectory_s3_key"],
+                result["evaluation_report_s3_key"],
+                result["started_at"],
+                result["completed_at"],
+                result["run_seconds"],
+                now,
+                job_id,
+            ),
         )
         scores = [
             row["score"]
@@ -183,6 +366,34 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
             avg = sum(float(score) for score in scores) / len(scores) if scores else None
             status = "succeeded" if scores else "failed"
             db.execute("update submissions set status = ?, score = ? where id = ?", (status, avg, job["submission_id"]))
+
+
+def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_files: dict[str, str | None]) -> None:
+    now = now_iso()
+    with connect() as db:
+        db.execute(
+            """
+            update jobs
+            set generation_s3_prefix = ?, evaluation_s3_prefix = ?,
+                agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
+                evaluation_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
+                started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                runtime_files["generation_s3_prefix"],
+                runtime_files["evaluation_s3_prefix"],
+                runtime_files["agent_info_s3_key"],
+                runtime_files["generation_trajectory_s3_key"],
+                runtime_files["evaluation_trajectory_s3_key"],
+                runtime_files["evaluation_report_s3_key"],
+                runtime["started_at"],
+                runtime["completed_at"],
+                runtime["run_seconds"],
+                now,
+                job_id,
+            ),
+        )
 
 
 def fail_job(job_id: str, exc: Exception) -> None:
