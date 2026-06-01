@@ -19,7 +19,6 @@ DEFAULT_MODEL = (
     or os.environ.get("VIS_ARENA_OPENAI_MODEL")
     or "gpt-4.1-mini"
 )
-MAX_STEPS = int(os.environ.get("VIS_ARENA_AGENT_STEPS", "20"))
 
 
 GENERATION_PROMPT = """You are a web data visualization agent.
@@ -199,7 +198,7 @@ def run_agent(system_prompt: str, user_prompt: str, tool_root: Path, purpose: st
         },
     ]
 
-    for _ in range(MAX_STEPS):
+    while True:
         message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
         messages.append(message)
         if not message.get("tool_calls"):
@@ -223,7 +222,6 @@ def run_agent(system_prompt: str, user_prompt: str, tool_root: Path, purpose: st
             else:
                 output = f"Unknown tool: {function.get('name')}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
-    raise SystemExit(f"Agent exceeded {MAX_STEPS} steps without finishing")
 
 
 class OpenAIChatClient:
