@@ -24,6 +24,9 @@ vis-arena = "vis_arena_sdk.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+vis_arena_sdk = ["templates/python/*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
