@@ -161,3 +161,68 @@ def test_binary_does_not_leak_traceback_on_api_error(tmp_path: Path) -> None:
     assert "Traceback" not in result.stderr, (
         f"User-facing CLI must not leak Python tracebacks.\nstderr was:\n{result.stderr}"
     )
+
+
+def test_init_scaffolds_template(tmp_path) -> None:
+    target = tmp_path / "my-agent"
+    result = runner.invoke(app, ["init", str(target)])
+
+    assert result.exit_code == 0, result.output
+    assert (target / "agent.py").exists()
+    assert (target / "submission.yaml").exists()
+    assert (target / "pyproject.toml").exists()
+    assert (target / "README.md").exists()
+    assert (target / "agent.py").read_text().startswith("#!/usr/bin/env python3")
+
+
+def test_init_refuses_nonempty_dir(tmp_path) -> None:
+    target = tmp_path / "occupied"
+    target.mkdir()
+    (target / "keep.txt").write_text("hi")
+
+    result = runner.invoke(app, ["init", str(target)])
+
+    assert result.exit_code == 1
+    assert "not empty" in result.output
+    assert not (target / "agent.py").exists()
+
+
+def test_init_force_writes_into_nonempty_dir(tmp_path) -> None:
+    target = tmp_path / "occupied"
+    target.mkdir()
+    (target / "keep.txt").write_text("hi")
+
+    result = runner.invoke(app, ["init", str(target), "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert (target / "agent.py").exists()
+    assert (target / "keep.txt").exists()
+
+
+def test_submit_prints_guided_next_steps(monkeypatch, tmp_path) -> None:
+    from vis_arena_sdk import cli
+    from vis_arena_sdk.models import Dataset, Submission
+
+    class FakeClient:
+        def resolve_dataset(self, value):
+            assert value == "monthly-sales"
+            return Dataset(id="ds-1", name="monthly-sales", visibility="public", task_count=1)
+
+        def upload_submission(self, path, name, dataset_id=None):
+            assert dataset_id == "ds-1"
+            return Submission(id="sub-9", name=name, status="queued")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_client", lambda *args, **kwargs: FakeClient())
+
+    bundle = tmp_path / "agent.zip"
+    bundle.write_bytes(b"PK\x03\x04")
+
+    result = runner.invoke(app, ["submit", str(bundle), "--dataset", "monthly-sales"])
+
+    assert result.exit_code == 0, result.output
+    assert 'Submission sub-9 queued against "monthly-sales".' in result.output
+    assert "vis-arena submissions results sub-9" in result.output
+    assert "vis-arena results preview <result-id>" in result.output

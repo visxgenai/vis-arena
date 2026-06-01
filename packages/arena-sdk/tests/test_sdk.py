@@ -81,3 +81,41 @@ def test_duplicate_register_raises_400(sdk_client: VisArenaClient) -> None:
         assert excinfo.value.status_code == 400
     finally:
         fresh.close()
+
+
+from vis_arena_sdk.models import Dataset
+
+
+def test_resolve_dataset_by_name_case_insensitive(sdk_client, monkeypatch) -> None:
+    datasets = [Dataset(id="uuid-1", name="monthly-sales", visibility="public", task_count=1)]
+    monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
+
+    assert sdk_client.resolve_dataset("Monthly-Sales").id == "uuid-1"
+
+
+def test_resolve_dataset_by_id(sdk_client, monkeypatch) -> None:
+    datasets = [Dataset(id="uuid-1", name="monthly-sales", visibility="public", task_count=1)]
+    monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
+
+    assert sdk_client.resolve_dataset("uuid-1").name == "monthly-sales"
+
+
+def test_resolve_dataset_no_match_lists_available(sdk_client, monkeypatch) -> None:
+    datasets = [Dataset(id="uuid-1", name="monthly-sales", visibility="public", task_count=1)]
+    monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
+
+    with pytest.raises(VisArenaError) as exc:
+        sdk_client.resolve_dataset("does-not-exist")
+    assert "monthly-sales" in str(exc.value)
+
+
+def test_resolve_dataset_ambiguous_name_raises(sdk_client, monkeypatch) -> None:
+    datasets = [
+        Dataset(id="uuid-1", name="dup", visibility="public", task_count=1),
+        Dataset(id="uuid-2", name="dup", visibility="public", task_count=1),
+    ]
+    monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
+
+    with pytest.raises(VisArenaError) as exc:
+        sdk_client.resolve_dataset("dup")
+    assert "Multiple datasets" in str(exc.value)

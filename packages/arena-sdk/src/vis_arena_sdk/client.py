@@ -75,6 +75,21 @@ class VisArenaClient:
         response = self._request("GET", "/v1/datasets")
         return TypeAdapter(list[Dataset]).validate_python(response.json()["items"])
 
+    def resolve_dataset(self, value: str) -> Dataset:
+        datasets = self.list_datasets()
+        for dataset in datasets:
+            if dataset.id == value:
+                return dataset
+        matches = [dataset for dataset in datasets if dataset.name.lower() == value.lower()]
+        if len(matches) == 1:
+            return matches[0]
+        if not matches:
+            available = ", ".join(sorted(dataset.name for dataset in datasets)) or "(none)"
+            raise VisArenaError(f"No dataset named or with id '{value}'. Available: {available}")
+        raise VisArenaError(
+            f"Multiple datasets named '{value}'; pass --dataset-id with the exact id."
+        )
+
     def upload_dataset(self, bundle_path: str | Path, name: str, visibility: str = "private") -> Dataset:
         with _as_zip(bundle_path) as path, path.open("rb") as handle:
             response = self._request("POST", "/v1/datasets/uploads", json={"name": name, "visibility": visibility})

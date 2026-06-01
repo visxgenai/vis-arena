@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import stat
+from importlib import resources
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Optional
@@ -19,6 +21,31 @@ app.add_typer(datasets_app, name="datasets")
 app.add_typer(submissions_app, name="submissions")
 app.add_typer(results_app, name="results")
 app.add_typer(llm_app, name="llm")
+
+
+@app.command()
+def init(
+    directory: Path,
+    force: bool = typer.Option(False, "--force", "-f", help="Scaffold even if the directory is not empty."),
+) -> None:
+    """Scaffold a new agent project from the Python template."""
+    if directory.exists() and any(directory.iterdir()) and not force:
+        typer.echo(f"Directory {directory} is not empty. Use --force to scaffold anyway.", err=True)
+        raise typer.Exit(1)
+    directory.mkdir(parents=True, exist_ok=True)
+
+    template_root = resources.files("vis_arena_sdk").joinpath("templates", "python")
+    for entry in template_root.iterdir():
+        if not entry.is_file():
+            continue
+        out_path = directory / entry.name
+        out_path.write_bytes(entry.read_bytes())
+        if entry.name == "agent.py":
+            out_path.chmod(out_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    typer.echo(f"Scaffolded agent template in {directory}")
+    typer.echo(f"  Next: cd {directory}")
+    typer.echo("        edit agent.py, then test locally with your OPENAI_API_KEY")
 
 
 def _client(server_url: str | None = None, token: str | None = None) -> VisArenaClient:
@@ -191,8 +218,14 @@ def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, 
 def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     client = _client(server_url, token)
     try:
-        submission = client.upload_submission(path, name=name, dataset_id=dataset_id)
-        typer.echo(f"{submission.id}\t{submission.name}\t{submission.status}")
+        dataset = client.resolve_dataset(dataset_id) if dataset_id else None
+        submission = client.upload_submission(
+            path, name=name, dataset_id=dataset.id if dataset else None
+        )
+        target = f'"{dataset.name}"' if dataset else "all public datasets"
+        typer.echo(f"Submission {submission.id} queued against {target}.")
+        typer.echo(f"  Check results:    vis-arena submissions results {submission.id}")
+        typer.echo("  Preview artifact: vis-arena results preview <result-id>")
     finally:
         client.close()
 
