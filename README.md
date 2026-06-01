@@ -59,20 +59,17 @@ cd apps/server
 VIS_ARENA_S3_BUCKET=... VIS_ARENA_WORKER_API_TOKEN=... uv run --with-editable . vis-arena-worker
 ```
 
-SDK/CLI:
+Participant journey (SDK/CLI):
 
 ```bash
-cd packages/arena-sdk
-uv run --with-editable . vis-arena --help
+uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
+vis-arena init my-agent && cd my-agent
+vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
+vis-arena submit . --dataset monthly-sales
 ```
 
-Template submission:
-
-```bash
-cd submissions/python-template
-OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
-OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --dist-dir /tmp/vis-run/dist --output /tmp/vis-run/evaluation.json
-```
+`submit` prints the next command. Use `vis-arena submissions results <id>` and
+`vis-arena results preview <result-id>` to inspect job artifacts.
 
 Frontend:
 

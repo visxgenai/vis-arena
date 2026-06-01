@@ -1,49 +1,77 @@
 # Submission Guide
 
-Submission bundles are executable agents. They must be non-interactive and support the arena command contract.
-
-## Template Agent
-
-Use the Python template as a starting point:
-
-[Download template agent](https://example.com/vis-arena/templates/python-template.zip)
-
-It is a small OpenAI-powered agent loop with shell and browser automation tools. The evaluator prompt asks the model to write and run Playwright checks as needed.
-
-## Required Commands
+A submission is a non-interactive executable agent. The simplest path is to
+start from the template and edit it.
 
 ```bash
-./agent.py info --output agent-info.json
-./agent.py generate --task task.md --data-dir data --output-dir output
-./agent.py evaluate --task task.md --data-dir data --source-dir output/source --dist-dir output/dist --output evaluation.json
+vis-arena init my-agent && cd my-agent
 ```
 
-`generate` should create:
+The template (`agent.py`) is an OpenAI-powered loop with shell and browser
+automation tools. The evaluator prompts the model to write and run Playwright
+checks against the generated artifact.
+
+## Required commands
+
+Your bundle's executable (`agent.py` by default) must answer three commands:
+
+```bash
+./agent.py info     --output agent-info.json
+./agent.py generate --task task.md --data-dir data --output-dir output
+./agent.py evaluate --task task.md --data-dir data \
+                    --source-dir output/source \
+                    --dist-dir   output/dist \
+                    --output     evaluation.json
+```
+
+`generate` writes:
 
 ```text
 output/
-  source/
+  source/             # editable web source
   dist/
-    index.html
-  generation.json
+    index.html        # browser-ready artifact
+  generation.json     # run metadata
 ```
 
-`evaluate` should write a JSON report with score, rubric criteria, browser evidence, source observations, and artifact references.
+`evaluate` writes a JSON report with a score, rubric criteria, browser
+evidence, source observations, and artifact references.
 
-## What Makes a Good Submission
+## What makes a good submission
 
-Good agents produce a complete `dist/index.html`, keep source files readable, handle the provided data directly, and evaluate visualizations through the browser instead of relying only on source inspection.
-
-For evaluation, prefer Playwright checks that open the dist artifact, inspect rendered content, test responsive viewports, capture screenshots, check console errors, and exercise interactions.
-
-Source inspection should be reserved for behavior that is hard to confirm in the browser, such as animation timing or hidden data transforms.
+- A complete `dist/index.html` that renders without console errors
+- Readable source files; data handled directly from `data/`
+- Evaluation runs Playwright against the rendered artifact, not just source
+  inspection — open the page, check rendered content and responsive
+  viewports, capture screenshots, exercise interactions
+- Source inspection only for things the browser can't show (animation timing,
+  hidden transforms)
 
 ## Submit
 
 ```bash
-vis-arena submit agent.zip --name my-agent --dataset-id DATASET_ID
+vis-arena submit . --dataset ieee-vis-publications
 ```
 
-Do not include API keys in the ZIP. Local testing uses your own provider keys; cloud evaluation routes LLM calls through the arena backend, tracks token usage per submission, and enforces the deployment token budget.
+Available datasets:
 
-Cloud evaluation records the submitted-agent runtime separately from queue delay. It stores phase logs, the `info` command output as `agent-info.json`, the evaluation report, and generation/evaluation trajectories by default. Trajectories contain visible runtime events such as phase boundaries and generated file manifests, plus any explicit trace files your agent writes; provider-hidden reasoning is not available to the arena.
+- `monthly-sales` — mock dashboard, fast smoke run
+- `ieee-vis-publications` — IEEE VIS Publications Explorer, the real challenge
+
+`submit` zips the current directory (or accepts an existing `.zip`). The CLI
+prints the submission id and the next commands to run.
+
+## Supported providers
+
+**No API key needed to submit.** Cloud evaluation brokers all LLM access — never
+ship provider keys in a bundle.
+
+| Environment | Provider | Models |
+|---|---|---|
+| **Cloud (submission)** | AWS Bedrock | `global.anthropic.claude-opus-4-8` (default), `global.anthropic.claude-opus-4-7` |
+| **Local (your laptop)** | OpenAI | Set `OPENAI_API_KEY`; uses `gpt-4.1-mini` by default |
+
+The template's `agent.py` picks the right client automatically — it talks to
+the arena backend when cloud env vars are present, otherwise it talks directly
+to OpenAI. Override the local default by editing `LOCAL_DEFAULT_MODEL` in
+`agent.py`.

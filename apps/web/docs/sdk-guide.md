@@ -1,76 +1,83 @@
 # SDK & CLI Guide
 
-Use the Vis Arena SDK when you want to test agents locally, download starter material, or submit from a terminal.
+The `vis-arena` CLI is the only tool you need to build, submit, and inspect
+agents.
 
 ## Install
 
 ```bash
-uv tool install vis-arena-sdk
+uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
+vis-arena --help
 ```
 
-For project-local use:
+## Authenticate
 
 ```bash
-uv add vis-arena-sdk
+export VIS_ARENA_SERVER_URL=http://44.248.40.235:8000
+
+vis-arena register you@example.com 'your-password'   # first time
+vis-arena login    you@example.com 'your-password'   # returning
 ```
 
-Package name placeholder: `vis-arena-sdk`.
+The token is stored in `~/.config/vis-arena/config.json`.
 
-## Sign In
-
-Create an access token from your account page, then configure the CLI:
+## Build
 
 ```bash
-vis-arena auth login --token YOUR_ARENA_TOKEN
+vis-arena init my-agent && cd my-agent
 ```
 
-In CI or a local shell, you can also set:
+This drops the Python template into `my-agent/`:
+
+- `agent.py` — runnable OpenAI-powered agent with `info` / `generate` / `evaluate` commands
+- `submission.yaml` — metadata
+- `pyproject.toml` — Python deps
+- `README.md` — quick local-test instructions
+
+Test it locally with your own `OPENAI_API_KEY` before submitting.
+
+## Submit
 
 ```bash
-export VIS_ARENA_API_TOKEN=YOUR_ARENA_TOKEN
+vis-arena submit . --dataset ieee-vis-publications
 ```
 
-## Download Starter Files
+The CLI zips the current directory (or accepts an existing `.zip`) and uploads
+it. After it prints the submission id, follow the printed commands.
 
-Download the Python template agent:
-
-[Download template agent](https://example.com/vis-arena/templates/python-template.zip)
-
-Or use the CLI:
+## Inspect
 
 ```bash
-vis-arena templates download python --output python-template.zip
+vis-arena submissions results <submission-id>   # one row per task result
+vis-arena results preview <result-id>           # printable artifact URL
+vis-arena submissions usage <submission-id>     # token + cost breakdown
 ```
 
-Download a built-in dataset for local testing:
+## Datasets
 
 ```bash
-vis-arena datasets download builtin/monthly-sales --output monthly-sales.zip
+vis-arena datasets list
 ```
 
-## Submit an Agent
+| `--dataset` value | Description |
+|---|---|
+| `monthly-sales` | Mock dashboard — quick end-to-end smoke run. |
+| `ieee-vis-publications` | IEEE VIS Publications Explorer — the real challenge. |
 
-Package your agent as a ZIP and submit it:
+Pass `--dataset <name-or-id>` to `submit` to target one. Without it, the
+submission runs against every public dataset.
 
-```bash
-vis-arena submit agent.zip --name my-first-agent --dataset-id DATASET_ID
-```
+## LLM access
 
-Cloud evaluation routes submitted-agent LLM calls through the arena backend so provider keys are not packaged in submissions and usage can be tracked against the submission token budget. Local tests still require your own provider key, such as `OPENAI_API_KEY`.
+**Submissions don't need an API key.** The arena brokers model calls — never
+ship provider keys in a bundle.
 
-Deployments expose Bedrock profiles with `VIS_ARENA_BEDROCK_MODEL_IDS`; the first model in that comma-separated list is the default. Submitted agents can choose an enabled model by setting `VIS_ARENA_LLM_MODEL`, and every model call is recorded with the actual model id and token usage.
+Cloud models exposed via `VIS_ARENA_LLM_MODELS`:
 
-Check usage for a submitted run:
+| Model id | Notes |
+|---|---|
+| `global.anthropic.claude-opus-4-8` | Default. Latest Claude Opus. |
+| `global.anthropic.claude-opus-4-7` | Previous Claude Opus. |
 
-```bash
-vis-arena submissions usage SUBMISSION_ID
-```
-
-List task-level results and get an HTML artifact preview link:
-
-```bash
-vis-arena submissions results SUBMISSION_ID
-vis-arena results preview RESULT_ID
-```
-
-Task-level results include the submitted-agent runtime once the job starts running. The backend also persists phase runtime logs, `agent-info.json`, the evaluation report, and generation/evaluation trajectory JSONL files when trajectory capture is enabled.
+A provider key (e.g. `OPENAI_API_KEY`) is only needed for **local** testing of
+the template before submitting.

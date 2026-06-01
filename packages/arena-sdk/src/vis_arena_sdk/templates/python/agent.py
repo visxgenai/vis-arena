@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+"""Vis Arena template agent.
+
+Environment variables — you do NOT create a .env file:
+
+  Local laptop testing:
+    OPENAI_API_KEY            you set this; the only var local testing needs.
+
+  Cloud evaluation (injected automatically by the arena worker — never set these yourself):
+    VIS_ARENA_API_TOKEN       short-lived token to call the arena backend.
+    VIS_ARENA_SERVER_URL      arena backend URL.
+    VIS_ARENA_JOB_ID          current job id.
+    VIS_ARENA_LLM_MODEL       chosen model id.
+    VIS_ARENA_LLM_MODELS      comma-separated list of available cloud models.
+"""
 from __future__ import annotations
 
 import argparse
@@ -14,10 +28,14 @@ from typing import Any
 from openai import OpenAI
 
 
+# Local fallback when no cloud override is present. Cloud jobs replace this via
+# VIS_ARENA_LLM_MODEL. Change this string to use a different model locally.
+LOCAL_DEFAULT_MODEL = "gpt-4.1-mini"
+
 DEFAULT_MODEL = (
     os.environ.get("VIS_ARENA_LLM_MODEL")
     or os.environ.get("VIS_ARENA_OPENAI_MODEL")
-    or "gpt-4.1-mini"
+    or LOCAL_DEFAULT_MODEL
 )
 
 
@@ -258,13 +276,17 @@ class ArenaChatClient:
 
 
 def make_llm_client(purpose: str) -> OpenAIChatClient | ArenaChatClient:
-    # In cloud evaluation the backend injects VIS_ARENA_API_TOKEN. The agent uses
-    # it to route model calls through the arena backend for cost tracking.
-    # For local testing, participants should set OPENAI_API_KEY themselves.
+    # Cloud: the arena worker injects VIS_ARENA_API_TOKEN + VIS_ARENA_JOB_ID and
+    # the agent routes model calls through the arena backend (no provider key
+    # needed). Local: you set OPENAI_API_KEY.
     if os.environ.get("VIS_ARENA_API_TOKEN") and os.environ.get("VIS_ARENA_JOB_ID") and not os.environ.get("OPENAI_API_KEY"):
         return ArenaChatClient(purpose)
     if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("Set OPENAI_API_KEY for local testing, or run inside cloud evaluation with VIS_ARENA_API_TOKEN.")
+        raise SystemExit(
+            "OPENAI_API_KEY is not set.\n"
+            "  Local testing: export OPENAI_API_KEY=sk-... and re-run.\n"
+            "  Submitting:   run `vis-arena submit . --dataset ieee-vis-publications`; the arena provides the key."
+        )
     return OpenAIChatClient()
 
 
