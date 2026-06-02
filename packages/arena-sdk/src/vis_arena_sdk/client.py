@@ -137,6 +137,10 @@ class VisArenaClient:
         response = self._request("GET", "/v1/submissions")
         return TypeAdapter(list[Submission]).validate_python(response.json()["items"])
 
+    def get_submission(self, submission_id: str) -> Submission:
+        response = self._request("GET", f"/v1/submissions/{submission_id}")
+        return Submission.model_validate(response.json())
+
     def get_submission_llm_usage(self, submission_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/submissions/{submission_id}/llm-usage").json()
 
@@ -149,8 +153,7 @@ class VisArenaClient:
     def wait_for_submission(self, submission_id: str, poll_seconds: float = 5.0, timeout_seconds: float = 900.0) -> Submission:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
-            response = self._request("GET", f"/v1/submissions/{submission_id}")
-            submission = Submission.model_validate(response.json())
+            submission = self.get_submission(submission_id)
             if submission.status in {"succeeded", "failed", "cancelled"}:
                 return submission
             time.sleep(poll_seconds)

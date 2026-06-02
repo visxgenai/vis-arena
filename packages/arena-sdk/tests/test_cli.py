@@ -224,5 +224,96 @@ def test_submit_prints_guided_next_steps(monkeypatch, tmp_path) -> None:
 
     assert result.exit_code == 0, result.output
     assert 'Submission sub-9 queued against "monthly-sales".' in result.output
-    assert "vis-arena submissions results sub-9" in result.output
-    assert "vis-arena results preview <result-id>" in result.output
+    assert "vis-arena submissions watch sub-9" in result.output
+    assert "vis-arena submissions preview sub-9" in result.output
+
+
+def test_submissions_preview_prints_submission_preview_url(monkeypatch) -> None:
+    from vis_arena_sdk import cli
+    from vis_arena_sdk.models import Submission
+
+    class FakeClient:
+        def get_submission(self, submission_id):
+            assert submission_id == "sub-9"
+            return Submission(id="sub-9", name="demo", status="succeeded", score=1.0)
+
+        def list_submission_jobs(self, submission_id):
+            assert submission_id == "sub-9"
+            return [{"id": "job-1", "task_id": "monthly-sales", "status": "succeeded", "preview_s3_key": "jobs/job-1/generation/preview/index.html"}]
+
+        def get_job_preview_url(self, job_id):
+            assert job_id == "job-1"
+            return "http://arena.example/v1/jobs/job-1/preview"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_client", lambda *args, **kwargs: FakeClient())
+
+    result = runner.invoke(app, ["submissions", "preview", "sub-9"])
+
+    assert result.exit_code == 0, result.output
+    assert "http://arena.example/v1/jobs/job-1/preview" in result.output
+
+
+def test_submissions_preview_points_running_submission_to_watch(monkeypatch) -> None:
+    from vis_arena_sdk import cli
+    from vis_arena_sdk.models import Submission
+
+    class FakeClient:
+        def get_submission(self, submission_id):
+            return Submission(id=submission_id, name="demo", status="running")
+
+        def list_submission_jobs(self, submission_id):
+            return [{"id": "job-1", "task_id": "monthly-sales", "status": "running", "preview_s3_key": None}]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_client", lambda *args, **kwargs: FakeClient())
+
+    result = runner.invoke(app, ["submissions", "preview", "sub-9"])
+
+    assert result.exit_code == 2, result.output
+    assert "still running" in result.output
+    assert "vis-arena submissions watch sub-9" in result.output
+
+
+def test_submissions_watch_prints_status_usage_and_preview(monkeypatch) -> None:
+    from vis_arena_sdk import cli
+    from vis_arena_sdk.models import Submission
+
+    class FakeClient:
+        def get_submission(self, submission_id):
+            assert submission_id == "sub-9"
+            return Submission(id="sub-9", name="demo", status="succeeded", score=0.82)
+
+        def list_submission_jobs(self, submission_id):
+            return [
+                {
+                    "id": "job-1",
+                    "task_id": "monthly-sales",
+                    "status": "succeeded",
+                    "run_seconds": 12.25,
+                    "preview_s3_key": "jobs/job-1/generation/preview/index.html",
+                }
+            ]
+
+        def get_submission_llm_usage(self, submission_id):
+            return {"summary": {"total_tokens": 123456}, "jobs": []}
+
+        def get_job_preview_url(self, job_id):
+            return "http://arena.example/v1/jobs/job-1/preview"
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(cli, "_client", lambda *args, **kwargs: FakeClient())
+
+    result = runner.invoke(app, ["submissions", "watch", "sub-9", "--poll-seconds", "1"])
+
+    assert result.exit_code == 0, result.output
+    assert "succeeded" in result.output
+    assert "tokens=123,456" in result.output
+    assert "score=0.82" in result.output
+    assert "http://arena.example/v1/jobs/job-1/preview" in result.output

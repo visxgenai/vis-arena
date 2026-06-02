@@ -66,10 +66,13 @@ uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=package
 vis-arena init my-agent && cd my-agent
 vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
 vis-arena submit . --dataset monthly-sales
+vis-arena submissions watch <submission-id>
+vis-arena submissions preview <submission-id>
 ```
 
-`submit` prints the next command. Use `vis-arena submissions results <id>` and
-`vis-arena results preview <result-id>` to inspect job artifacts.
+`submit` prints the follow-up commands. Use `vis-arena submissions watch <id>`
+to poll progress and `vis-arena submissions preview <id>` to print the generated
+visualization URL.
 
 Frontend:
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import stat
+import time
 from importlib import resources
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -224,8 +225,8 @@ def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, 
         )
         target = f'"{dataset.name}"' if dataset else "all public datasets"
         typer.echo(f"Submission {submission.id} queued against {target}.")
-        typer.echo(f"  Check results:    vis-arena submissions results {submission.id}")
-        typer.echo("  Preview artifact: vis-arena results preview <result-id>")
+        typer.echo(f"  Track progress:  vis-arena submissions watch {submission.id}")
+        typer.echo(f"  Preview artifact: vis-arena submissions preview {submission.id}")
     finally:
         client.close()
 
@@ -252,6 +253,64 @@ def submissions_usage(submission_id: str, server_url: Optional[str] = None, toke
         client.close()
 
 
+@submissions_app.command("watch")
+def submissions_watch(
+    submission_id: str,
+    poll_seconds: float = typer.Option(10.0, "--poll-seconds", min=1.0, help="Seconds between status checks."),
+    timeout_seconds: float = typer.Option(0.0, "--timeout-seconds", min=0.0, help="Stop after this many seconds. 0 means no timeout."),
+    server_url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
+    """Poll a submission until it finishes."""
+    client = _client(server_url, token)
+    started = time.monotonic()
+    last_line = None
+    try:
+        while True:
+            submission = client.get_submission(submission_id)
+            jobs = client.list_submission_jobs(submission_id)
+            usage = client.get_submission_llm_usage(submission_id)
+            line = _format_submission_status(submission.status, submission.score, jobs, usage)
+            if line != last_line:
+                typer.echo(line)
+                last_line = line
+            if submission.status in {"succeeded", "failed", "cancelled"}:
+                if submission.status == "succeeded":
+                    _print_submission_preview_urls(client, jobs)
+                elif _job_errors(jobs):
+                    typer.echo(_job_errors(jobs), err=True)
+                return
+            if timeout_seconds and time.monotonic() - started >= timeout_seconds:
+                typer.echo(f"Timed out waiting for submission {submission_id}.", err=True)
+                raise typer.Exit(2)
+            time.sleep(poll_seconds)
+    finally:
+        client.close()
+
+
+@submissions_app.command("preview")
+def submissions_preview(submission_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Print HTML preview URL(s) for a finished submission."""
+    client = _client(server_url, token)
+    try:
+        submission = client.get_submission(submission_id)
+        jobs = client.list_submission_jobs(submission_id)
+        preview_jobs = [job for job in jobs if job.get("preview_s3_key")]
+        if preview_jobs:
+            _print_submission_preview_urls(client, preview_jobs)
+            return
+        if submission.status in {"queued", "running", "uploading"} or any(job.get("status") in {"queued", "running"} for job in jobs):
+            typer.echo(f"Submission {submission_id} is still {submission.status}.")
+            typer.echo(f"  Track progress: vis-arena submissions watch {submission_id}")
+            raise typer.Exit(2)
+        errors = _job_errors(jobs)
+        if errors:
+            typer.echo(errors, err=True)
+        raise VisArenaError(f"No preview artifact is available for submission {submission_id}.")
+    finally:
+        client.close()
+
+
 @submissions_app.command("results")
 def submissions_results(submission_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     """List task-level results for a submission."""
@@ -264,6 +323,36 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
             typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
     finally:
         client.close()
+
+
+def _format_submission_status(status: str, score: float | None, jobs: list[dict], usage: dict) -> str:
+    job_statuses = {str(job.get("status") or "unknown") for job in jobs}
+    run_seconds = max((float(job["run_seconds"]) for job in jobs if job.get("run_seconds") is not None), default=None)
+    total_tokens = int((usage.get("summary") or {}).get("total_tokens") or 0)
+    parts = [status]
+    if job_statuses and (len(job_statuses) > 1 or status not in job_statuses):
+        parts.append("tasks=" + ",".join(sorted(job_statuses)))
+    if run_seconds is not None:
+        parts.append(f"runtime={run_seconds:.1f}s")
+    if total_tokens:
+        parts.append(f"tokens={total_tokens:,}")
+    if score is not None:
+        parts.append(f"score={score:.2f}")
+    return "  ".join(parts)
+
+
+def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> None:
+    preview_jobs = [job for job in jobs if job.get("preview_s3_key")]
+    if not preview_jobs:
+        return
+    for job in preview_jobs:
+        prefix = f"{job.get('task_id')}: " if len(preview_jobs) > 1 and job.get("task_id") else ""
+        typer.echo(prefix + client.get_job_preview_url(str(job["id"])))
+
+
+def _job_errors(jobs: list[dict]) -> str:
+    errors = [f"{job.get('task_id') or job.get('id')}: {job.get('error')}" for job in jobs if job.get("error")]
+    return "\n".join(errors)
 
 
 @results_app.command("preview")
