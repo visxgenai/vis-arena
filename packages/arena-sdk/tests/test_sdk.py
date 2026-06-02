@@ -93,6 +93,17 @@ def test_resolve_dataset_by_name_case_insensitive(sdk_client, monkeypatch) -> No
     assert sdk_client.resolve_dataset("Monthly-Sales").id == "uuid-1"
 
 
+def test_resolve_dataset_by_slug_alias(sdk_client, monkeypatch) -> None:
+    datasets = [
+        Dataset(id="uuid-1", name="Monthly Sales Dashboard", visibility="public", task_count=1),
+        Dataset(id="uuid-2", name="IEEE VIS Publications Explorer", visibility="public", task_count=1),
+    ]
+    monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
+
+    assert sdk_client.resolve_dataset("monthly-sales").id == "uuid-1"
+    assert sdk_client.resolve_dataset("ieee-vis-publications").id == "uuid-2"
+
+
 def test_resolve_dataset_by_id(sdk_client, monkeypatch) -> None:
     datasets = [Dataset(id="uuid-1", name="monthly-sales", visibility="public", task_count=1)]
     monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
@@ -111,8 +122,8 @@ def test_resolve_dataset_no_match_lists_available(sdk_client, monkeypatch) -> No
 
 def test_resolve_dataset_ambiguous_name_raises(sdk_client, monkeypatch) -> None:
     datasets = [
-        Dataset(id="uuid-1", name="dup", visibility="public", task_count=1),
-        Dataset(id="uuid-2", name="dup", visibility="public", task_count=1),
+        Dataset(id="uuid-1", name="dup a", visibility="public", task_count=1),
+        Dataset(id="uuid-2", name="dup b", visibility="public", task_count=1),
     ]
     monkeypatch.setattr(sdk_client, "list_datasets", lambda: datasets)
 

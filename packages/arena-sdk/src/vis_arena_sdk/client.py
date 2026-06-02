@@ -81,13 +81,24 @@ class VisArenaClient:
             if dataset.id == value:
                 return dataset
         matches = [dataset for dataset in datasets if dataset.name.lower() == value.lower()]
+        if not matches:
+            lookup = _dataset_lookup_key(value)
+            matches = [
+                dataset
+                for dataset in datasets
+                if lookup
+                and (
+                    lookup == _dataset_lookup_key(dataset.name)
+                    or lookup in _dataset_lookup_key(dataset.name)
+                )
+            ]
         if len(matches) == 1:
             return matches[0]
         if not matches:
-            available = ", ".join(sorted(dataset.name for dataset in datasets)) or "(none)"
+            available = ", ".join(sorted(f"{dataset.name} ({dataset.id})" for dataset in datasets)) or "(none)"
             raise VisArenaError(f"No dataset named or with id '{value}'. Available: {available}")
         raise VisArenaError(
-            f"Multiple datasets named '{value}'; pass --dataset-id with the exact id."
+            f"Multiple datasets match '{value}'; pass the exact dataset id."
         )
 
     def upload_dataset(self, bundle_path: str | Path, name: str, visibility: str = "private") -> Dataset:
@@ -211,3 +222,7 @@ def _put_presigned_upload(url: str, handle, headers: dict[str, str], timeout: fl
 
 def _is_excluded_bundle_path(relative: Path) -> bool:
     return any(part in _EXCLUDED_BUNDLE_DIRS for part in relative.parts) or relative.name in _EXCLUDED_BUNDLE_FILES
+
+
+def _dataset_lookup_key(value: str) -> str:
+    return "".join(char for char in value.lower() if char.isalnum())
