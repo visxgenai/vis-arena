@@ -8,13 +8,14 @@ This repository contains:
 - A compact Python/OpenAI template submission agent with `generate` and `evaluate` commands.
 - A Python SDK and CLI for authentication, datasets, tasks, and submissions.
 - A FastAPI backend skeleton for accounts, S3 presigned uploads, Docker evaluation jobs, and cloud-only LLM token brokerage.
-- A React arena frontend for browsing datasets, submissions, leaderboard entries, and visual previews.
+- A participant-facing evaluation frontend maintained in `apps/evaluation-server-frontend`.
 
 ## Repository Layout
 
 ```text
 apps/server/                 FastAPI backend
-apps/web/                    React frontend
+apps/evaluation-server-frontend/
+                             Active frontend submodule
 docs/arena_protocol.md       Task, generation, and evaluation interfaces
 examples/tasks/              Example benchmark task
 packages/arena-sdk/          Python SDK and CLI
@@ -77,8 +78,7 @@ visualization URL.
 Frontend:
 
 ```bash
-cd apps/web
-cp .env.example .env
+cd apps/evaluation-server-frontend
 pnpm install
 pnpm dev
 ```
