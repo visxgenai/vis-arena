@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
+from zipfile import ZipFile
 
 from fastapi.testclient import TestClient
 
@@ -210,3 +211,22 @@ def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) 
         ("jobs/job-123/evaluation/trajectory.jsonl", "application/x-ndjson"),
         ("jobs/job-123/evaluation/report.json", "application/json"),
     ]
+
+
+def test_generation_artifacts_zip_excludes_task_data(tmp_path: Path) -> None:
+    from vis_arena_server.evaluator import make_generation_artifacts_zip
+
+    work_dir = tmp_path / "work"
+    (work_dir / "task" / "data").mkdir(parents=True)
+    (work_dir / "output" / "dist").mkdir(parents=True)
+    (work_dir / "output" / "source").mkdir(parents=True)
+    (work_dir / "task" / "data" / "large.csv").write_text("not an artifact", encoding="utf-8")
+    (work_dir / "output" / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (work_dir / "output" / "source" / "main.js").write_text("console.log('ok')", encoding="utf-8")
+    target_zip = tmp_path / "artifacts.zip"
+
+    make_generation_artifacts_zip(work_dir, target_zip)
+
+    with ZipFile(target_zip) as archive:
+        names = set(archive.namelist())
+    assert names == {"dist/index.html", "source/main.js"}

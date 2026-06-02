@@ -74,7 +74,7 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
         evaluation = json.loads((reports_dir / "evaluation" / "report.json").read_text(encoding="utf-8"))
-        make_zip(work_dir, artifacts_zip)
+        make_generation_artifacts_zip(work_dir, artifacts_zip)
         artifact_prefix = f"jobs/{job['id']}/generation/artifacts"
         preview_prefix = f"jobs/{job['id']}/generation/preview"
         preview_s3_key = None
@@ -100,6 +100,13 @@ def copy_sdk(target: Path) -> None:
         target,
         ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.egg-info"),
     )
+
+
+def make_generation_artifacts_zip(work_dir: Path, target_zip: Path) -> None:
+    output_dir = work_dir / "output"
+    if not output_dir.exists():
+        raise RuntimeError("Agent did not create an output directory")
+    make_zip(output_dir, target_zip)
 
 
 def render_container_script() -> str:
