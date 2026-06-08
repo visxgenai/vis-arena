@@ -82,11 +82,13 @@ EVALUATION_PROMPT = """You are an impartial web visualization evaluator.
 You are given:
   WORKDIR              contains task.md, data/, and dist/index.html (the artifact)
   ARTIFACT_URL         serves WORKDIR/dist/ over http://127.0.0.1:<port>/
+                       Use the URL verbatim — its port is dynamic. Do not
+                       reconstruct it or hardcode localhost:8080.
 
 Read WORKDIR/task.md with the bash tool to know what was asked. Then open
-ARTIFACT_URL with the playwright tool (page.goto(...)) and interact with the
-live page — do NOT read dist/index.html as a file. Use WORKDIR/data/ for
-ground-truth correctness checks (e.g., the dataset has 12 rows; does the
+ARTIFACT_URL with the playwright tool (page.goto(ARTIFACT_URL)) and interact
+with the live page — do NOT read dist/index.html as a file. Use WORKDIR/data/
+for ground-truth correctness checks (e.g., the dataset has 12 rows; does the
 chart show 12 bars?).
 
 When done, call finish with JSON containing score, max_score, summary,

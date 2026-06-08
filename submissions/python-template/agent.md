@@ -55,7 +55,13 @@ the URL to your hook:
 def evaluate(workdir: Path, artifact_url: str) -> dict:
     # artifact_url looks like: http://127.0.0.1:38192/index.html
     # Open it with Playwright; do NOT read dist/index.html as a file.
+    await page.goto(artifact_url)
 ```
+
+**Use `artifact_url` verbatim.** The port is dynamic (the OS picks a free one
+per run) and is already embedded in the string `agent.py` hands you — do not
+hardcode `localhost:8080` or reconstruct the URL. Just pass `artifact_url`
+through to Playwright.
 
 Playwright against this URL behaves the same way the arena's preview endpoint
 will when reviewers view your artifact later (proper origin, `fetch()` works,
