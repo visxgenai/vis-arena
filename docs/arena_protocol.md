@@ -89,34 +89,38 @@ workdir/
   generation.json   # out  — slim metadata (see below)
 ```
 
-**Evaluate workdir** (a fresh directory staged for the evaluate phase):
+**Evaluate workdir** (intentionally minimal):
 
 ```text
 workdir/
   task.md           # in
-  data/             # in   — ground truth for correctness checks
-  dist/             # in   — copied from the generate phase's dist/
-    index.html
-  evaluation.json   # out  — the evaluation report (see below)
+  evaluation.json   # out — the evaluation report (see below)
 ```
 
-Note `source/` is NOT staged into the evaluate workdir. Evaluation interacts
-with the rendered artifact through Playwright (see "Artifact URL" below), not
-by reading source code.
+No `data/`, no `dist/`, no `source/`. The evaluator's only access to the
+artifact is through `ARTIFACT_URL` (below). This shape is identical for
+self-evaluation, peer-evaluation, and central-judge evaluation — the agent
+cannot tell them apart and the same code path serves all three.
 
 ## Artifact URL (evaluate)
 
-During `evaluate`, the contract layer (`agent.py`) starts a localhost HTTP
-server bound to `workdir/dist/` and passes the URL to the participant hook:
+`agent.py` resolves the artifact URL in one of two ways and passes it to the
+participant hook:
 
 ```python
 def evaluate(workdir: Path, artifact_url: str) -> dict
 ```
 
-`artifact_url` looks like `http://127.0.0.1:38192/index.html`. Use it with
-Playwright (`page.goto(artifact_url)`) so fetches, ES modules, and CORS behave
-the same way they will when the artifact is later served by the arena preview
-endpoint.
+1. **Arena evaluation** (self, peer, or central judge): the worker injects
+   `VIS_ARENA_ARTIFACT_URL` pointing at the artifact's S3-served preview, e.g.
+   `https://<server>/v1/jobs/<artifact-job-id>/preview/index.html`. The agent
+   has no need to know whose artifact it is — same URL shape regardless.
+2. **Local testing** (no env var): `agent.py` falls back to a localhost HTTP
+   server bound to `workdir/dist/index.html`. URL looks like
+   `http://127.0.0.1:<port>/index.html`; the port is OS-assigned per run.
+
+Hook code uses `artifact_url` verbatim with Playwright (`page.goto(...)`).
+Don't reconstruct it or hardcode a port.
 
 ## Generation Output
 

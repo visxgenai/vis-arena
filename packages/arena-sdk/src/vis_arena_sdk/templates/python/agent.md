@@ -32,38 +32,46 @@ hook.
 
 ## Evaluate
 
-A fresh workdir for the evaluate phase:
+A minimal workdir for the evaluate phase:
 
 ```
 workdir/
-  task.md           # in
-  data/             # in
-  dist/             # in — copied from generate's dist/
-    index.html
-  evaluation.json   # OUT — the scoring report, written automatically by agent.py
+  task.md           # in   — what was asked
+  evaluation.json   # OUT  — the scoring report, written automatically by agent.py
 ```
 
-`source/` is intentionally NOT staged here — evaluation interacts with the
-rendered artifact, not the source code.
+That's it. The evaluator does NOT receive the artifact's source, dist, or
+data files. Evaluation interacts with the rendered artifact entirely through
+`ARTIFACT_URL` (below).
+
+This is the **same shape for every kind of eval** — self, peer, and central
+judge. Your hook can't tell them apart, which is the point: identical code
+path everywhere.
 
 ### Artifact URL
 
-`agent.py` starts a localhost HTTP server bound to `workdir/dist/` and passes
-the URL to your hook:
+`agent.py` resolves `artifact_url` one of two ways:
+
+1. **Arena evaluation** (self / peer / central judge): the worker sets
+   `VIS_ARENA_ARTIFACT_URL` pointing at the artifact's S3-served preview, e.g.
+   `https://<server>/v1/jobs/<artifact-job-id>/preview/index.html`. `agent.py`
+   passes it straight to your hook.
+
+2. **Local testing** (no env var): `agent.py` falls back to spinning up a
+   localhost HTTP server pointing at `workdir/dist/index.html` (you put it
+   there by running `generate` first). The URL looks like
+   `http://127.0.0.1:38192/index.html` with a dynamic port.
+
+Either way your hook signature is the same:
 
 ```python
 def evaluate(workdir: Path, artifact_url: str) -> dict:
-    # artifact_url looks like: http://127.0.0.1:38192/index.html
-    # Open it with Playwright; do NOT read dist/index.html as a file.
+    # artifact_url is a complete, ready-to-use URL — pass it through verbatim.
+    # Do NOT reconstruct it; do NOT hardcode localhost:8080.
     await page.goto(artifact_url)
 ```
 
-**Use `artifact_url` verbatim.** The port is dynamic (the OS picks a free one
-per run) and is already embedded in the string `agent.py` hands you — do not
-hardcode `localhost:8080` or reconstruct the URL. Just pass `artifact_url`
-through to Playwright.
-
-Playwright against this URL behaves the same way the arena's preview endpoint
+Playwright against the URL behaves the same way the arena's preview endpoint
 will when reviewers view your artifact later (proper origin, `fetch()` works,
 ES modules import correctly).
 

@@ -37,12 +37,16 @@ is yours to delete or rewrite.
 2. **Shell out to your CLI** — `subprocess.run([sys.executable, "-m", "my_agent", ...])`.
 3. **Inline implementation** — replace the OpenAI tool-loop with your own code.
 
-`workdir` contains `task.md`, `data/`, and (during evaluate) `dist/index.html`
-at fixed relative paths. See [`agent.md`](./agent.md) for the full layout.
+`workdir` for `generate` contains `task.md` and `data/`. `workdir` for
+`evaluate` contains just `task.md` — the artifact is reached through
+`artifact_url`, not through the workdir. See [`agent.md`](./agent.md) for
+the full layout.
 
-`artifact_url` (evaluate only) is a localhost HTTP URL that serves
-`workdir/dist/`. Open it with Playwright via `page.goto(artifact_url)` —
-do not read `dist/index.html` as a file.
+`artifact_url` is provided by the arena (`VIS_ARENA_ARTIFACT_URL`, pointing
+at the S3-served preview) for self / peer / central-judge evaluations alike.
+For local testing, `agent.py` falls back to spinning up a localhost server
+pointing at `workdir/dist/`. Either way, use the URL verbatim:
+`page.goto(artifact_url)` — do not reconstruct it.
 
 ## You do not need an API key to submit
 

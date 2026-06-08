@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import http.server
 import json
+import os
 import socketserver
 import threading
 from contextlib import contextmanager
@@ -99,11 +100,19 @@ def _run_generate(workdir: Path) -> None:
 
 def _run_evaluate(workdir: Path) -> None:
     _require_input(workdir, "task.md")
-    _require_input(workdir, "data")
-    _require_input(workdir, "dist/index.html")
 
-    with _serve_dist(workdir / "dist") as artifact_url:
-        result = example_agent.evaluate(workdir, artifact_url) or {}
+    # Worker injects VIS_ARENA_ARTIFACT_URL pointing at the S3-served preview
+    # of the artifact under review. This path is identical for self-eval,
+    # peer-eval, and central judge — the hook can't tell them apart.
+    # With no env var, fall back to serving workdir/dist/ on localhost so
+    # participants can test locally after running generate.
+    provided_url = os.environ.get("VIS_ARENA_ARTIFACT_URL")
+    if provided_url:
+        result = example_agent.evaluate(workdir, provided_url) or {}
+    else:
+        _require_input(workdir, "dist/index.html")
+        with _serve_dist(workdir / "dist") as artifact_url:
+            result = example_agent.evaluate(workdir, artifact_url) or {}
 
     task_id = _extract_task_id((workdir / "task.md").read_text(encoding="utf-8"))
     score = float(result.get("score", 0))
