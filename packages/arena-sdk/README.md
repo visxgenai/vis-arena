@@ -8,7 +8,9 @@ uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=package
 vis-arena init my-agent && cd my-agent
 vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
 vis-arena datasets list
-vis-arena submit . --dataset monthly-sales
+printf 'OPENAI_API_KEY=sk-...\n' > .env
+vis-arena local run . --dataset monthly-sales
+vis-arena submit . --name "my-agent-v1" --dataset monthly-sales   # --name shows on the leaderboard
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
