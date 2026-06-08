@@ -29,15 +29,22 @@ def run() -> None:
 
 
 def claim_job() -> dict[str, Any] | None:
+    refresh_waiting_reviews()
     with connect() as db:
         row = db.execute(
             """
-            select jobs.*, submissions.owner_id, submissions.s3_key as submission_s3_key, datasets.s3_key as dataset_s3_key
+            select jobs.*,
+                   submissions.owner_id,
+                   submissions.s3_key as submission_s3_key,
+                   datasets.s3_key as dataset_s3_key,
+                   target.artifact_s3_prefix as target_artifact_s3_prefix
             from jobs
             join submissions on submissions.id = jobs.submission_id
             join datasets on datasets.id = jobs.dataset_id
+            left join jobs target on target.id = jobs.review_target_job_id
             where jobs.status = 'queued'
-            order by jobs.created_at
+            order by case coalesce(jobs.job_type, 'generation') when 'generation' then 0 else 1 end,
+                     jobs.created_at
             limit 1
             """
         ).fetchone()
@@ -45,11 +52,17 @@ def claim_job() -> dict[str, Any] | None:
             return None
         now = now_iso()
         db.execute("update jobs set status = ?, updated_at = ? where id = ?", ("running", now, row["id"]))
-        db.execute("update submissions set status = ? where id = ?", ("running", row["submission_id"]))
+        db.execute("update submissions set status = ? where id = ?", ("running", row["generator_submission_id"] or row["submission_id"]))
         return dict(row)
 
 
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
+    if (job.get("job_type") or "generation") == "peer_review":
+        return run_peer_review_job(job)
+    return run_generation_job(job)
+
+
+def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         submission_zip = root / "submission.zip"
@@ -73,7 +86,6 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         if runtime["returncode"] != 0:
             raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
-        evaluation = json.loads((reports_dir / "evaluation" / "report.json").read_text(encoding="utf-8"))
         make_generation_artifacts_zip(work_dir, artifacts_zip)
         artifact_prefix = f"jobs/{job['id']}/generation/artifacts"
         preview_prefix = f"jobs/{job['id']}/generation/preview"
@@ -84,10 +96,50 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
             upload_s3_directory(preview_dist, preview_prefix)
             preview_s3_key = f"{preview_prefix}/index.html"
         return {
-            "evaluation": evaluation,
-            "score": evaluation.get("score"),
+            "result": {
+                "artifact_s3_prefix": artifact_prefix,
+                "preview_s3_key": preview_s3_key,
+            },
             "artifact_s3_prefix": artifact_prefix,
             "preview_s3_key": preview_s3_key,
+            **runtime,
+            **runtime_files,
+        }
+
+
+def run_peer_review_job(job: dict[str, Any]) -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        submission_zip = root / "submission.zip"
+        submission_dir = root / "submission"
+        work_dir = root / "work"
+        reports_dir = root / "reports"
+        target_artifacts_zip = root / "target-artifacts.zip"
+
+        if not job.get("target_artifact_s3_prefix"):
+            raise RuntimeError("Peer review target artifact is not available")
+
+        download_s3(job["submission_s3_key"], submission_zip)
+        safe_extract_zip(submission_zip, submission_dir)
+        copy_sdk(root / "sdk")
+        copy_task_data(job["dataset_s3_key"], job["task_id"], work_dir)
+        download_s3(f"{job['target_artifact_s3_prefix']}.zip", target_artifacts_zip)
+        safe_extract_zip(target_artifacts_zip, work_dir / "output")
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        script = render_container_script()
+        (root / "run.sh").write_text(script, encoding="utf-8")
+        os.chmod(root / "run.sh", 0o755)
+        runtime = run_docker(root, job)
+        runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
+        update_job_runtime_metadata(job["id"], runtime, runtime_files)
+        if runtime["returncode"] != 0:
+            raise RuntimeError(f"Docker peer review failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
+
+        evaluation = json.loads((reports_dir / "evaluation" / "report.json").read_text(encoding="utf-8"))
+        return {
+            "result": evaluation,
+            "score": evaluation.get("score"),
             **runtime,
             **runtime_files,
         }
@@ -202,17 +254,23 @@ finish_phase() {
 cd /arena/submission
 if [ -f pyproject.toml ]; then
   python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
-  run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
-  run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  finish_phase generation
-  run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
-  finish_phase evaluation
+  if [ "${VIS_ARENA_JOB_TYPE:-generation}" = "generation" ]; then
+    run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
+    run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+    finish_phase generation
+  else
+    run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+    finish_phase evaluation
+  fi
 else
-  run_phase generation info ./agent info --output /arena/work/agent-info.json
-  run_phase generation generate ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
-  finish_phase generation
-  run_phase evaluation evaluate ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
-  finish_phase evaluation
+  if [ "${VIS_ARENA_JOB_TYPE:-generation}" = "generation" ]; then
+    run_phase generation info ./agent info --output /arena/work/agent-info.json
+    run_phase generation generate ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+    finish_phase generation
+  else
+    run_phase evaluation evaluate ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+    finish_phase evaluation
+  fi
 fi
 """
 
@@ -237,6 +295,8 @@ def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         "UV_PROJECT_ENVIRONMENT=/arena/.venv",
         "-e",
         f"VIS_ARENA_RECORD_TRAJECTORY={'true' if settings.record_trajectory else 'false'}",
+        "-e",
+        f"VIS_ARENA_JOB_TYPE={job.get('job_type') or 'generation'}",
         "-e",
         f"VIS_ARENA_SERVER_URL={_container_server_url()}",
         "-e",
@@ -331,10 +391,251 @@ def _container_server_url() -> str:
     return settings.public_base_url
 
 
+def refresh_waiting_reviews() -> None:
+    now = now_iso()
+    with connect() as db:
+        waiting = db.execute(
+            """
+            select jobs.*
+            from jobs join submissions reviewer on reviewer.id = jobs.submission_id
+            where jobs.job_type = 'peer_review'
+              and jobs.status = 'waiting_reviewer'
+              and (reviewer.reviewer_eligible_at is not null or reviewer.status = 'failed')
+            order by jobs.created_at
+            """
+        ).fetchall()
+        for row in waiting:
+            review = dict(row)
+            reviewer = db.execute("select * from submissions where id = ?", (review["submission_id"],)).fetchone()
+            if reviewer is not None and reviewer["reviewer_eligible_at"] and reviewer["status"] != "failed":
+                db.execute("update jobs set status = ?, updated_at = ? where id = ?", ("queued", now, review["id"]))
+            else:
+                _fallback_waiting_review(db, review, now)
+            _update_generator_submission_rollup(db, review["generator_submission_id"], now)
+
+
+def queue_peer_reviews_for_generation(db, generation_job_id: str, cutoff_at: str) -> None:
+    generation_job = db.execute(
+        """
+        select jobs.*, submissions.owner_id as generator_owner_id
+        from jobs join submissions on submissions.id = coalesce(jobs.generator_submission_id, jobs.submission_id)
+        where jobs.id = ?
+        """,
+        (generation_job_id,),
+    ).fetchone()
+    if generation_job is None:
+        return
+    job = dict(generation_job)
+    generator_submission_id = job["generator_submission_id"] or job["submission_id"]
+    reviewer_rows = db.execute(
+        """
+        select id, owner_id, status, finalized_at, reviewer_eligible_at, created_at
+        from submissions
+        where owner_id != ?
+          and finalized_at is not null
+          and finalized_at <= ?
+        order by owner_id, finalized_at desc, created_at desc
+        """,
+        (job["generator_owner_id"], cutoff_at),
+    ).fetchall()
+
+    latest_by_user: dict[str, dict[str, Any]] = {}
+    for row in reviewer_rows:
+        reviewer = dict(row)
+        latest_by_user.setdefault(reviewer["owner_id"], reviewer)
+
+    for reviewer in latest_by_user.values():
+        already_exists = db.execute(
+            """
+            select 1 from jobs
+            where job_type = 'peer_review'
+              and review_target_job_id = ?
+              and reviewer_user_id = ?
+            """,
+            (generation_job_id, reviewer["owner_id"]),
+        ).fetchone()
+        if already_exists:
+            continue
+
+        reviewer_submission_id = reviewer["id"]
+        status = "waiting_reviewer"
+        error = None
+        if reviewer["status"] == "failed":
+            fallback = _previous_eligible_reviewer_submission(db, reviewer["owner_id"], cutoff_at, reviewer["id"])
+            if fallback:
+                reviewer_submission_id = fallback["id"]
+                status = "queued"
+            else:
+                status = "failed"
+                error = "No eligible reviewer submission is available for this user"
+        elif reviewer["reviewer_eligible_at"]:
+            status = "queued"
+
+        db.execute(
+            """
+            insert into jobs (
+              id, submission_id, job_type, generator_submission_id,
+              review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
+              dataset_id, task_id, status, error, created_at, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _new_id(),
+                reviewer_submission_id,
+                "peer_review",
+                generator_submission_id,
+                generation_job_id,
+                reviewer["owner_id"],
+                cutoff_at,
+                job["dataset_id"],
+                job["task_id"],
+                status,
+                error,
+                cutoff_at,
+                cutoff_at,
+            ),
+        )
+
+
+def _fallback_waiting_review(db, review: dict[str, Any], now: str) -> None:
+    fallback = _previous_eligible_reviewer_submission(
+        db,
+        review["reviewer_user_id"],
+        review["reviewer_cutoff_at"],
+        review["submission_id"],
+    )
+    if fallback:
+        db.execute(
+            "update jobs set submission_id = ?, status = ?, error = null, updated_at = ? where id = ?",
+            (fallback["id"], "queued", now, review["id"]),
+        )
+        return
+    db.execute(
+        "update jobs set status = ?, error = ?, updated_at = ? where id = ?",
+        ("failed", "Reviewer submission failed and no previous eligible submission is available", now, review["id"]),
+    )
+
+
+def _previous_eligible_reviewer_submission(db, reviewer_user_id: str, cutoff_at: str, exclude_submission_id: str | None) -> dict[str, Any] | None:
+    row = db.execute(
+        """
+        select *
+        from submissions
+        where owner_id = ?
+          and finalized_at is not null
+          and finalized_at <= ?
+          and reviewer_eligible_at is not null
+          and status != 'failed'
+          and (? is null or id != ?)
+        order by finalized_at desc, created_at desc
+        limit 1
+        """,
+        (reviewer_user_id, cutoff_at, exclude_submission_id, exclude_submission_id),
+    ).fetchone()
+    return row_to_dict(row)
+
+
+def _update_generator_submission_rollup(db, submission_id: str | None, now: str) -> None:
+    if not submission_id:
+        return
+
+    generation_summary = db.execute(
+        """
+        select
+          count(*) as total,
+          sum(case when status in ('queued', 'running') then 1 else 0 end) as pending,
+          sum(case when status = 'succeeded' then 1 else 0 end) as succeeded
+        from jobs
+        where coalesce(job_type, 'generation') = 'generation'
+          and submission_id = ?
+        """,
+        (submission_id,),
+    ).fetchone()
+    total_generations = int(generation_summary["total"] or 0)
+    pending_generations = int(generation_summary["pending"] or 0)
+    succeeded_generations = int(generation_summary["succeeded"] or 0)
+    if total_generations == 0:
+        return
+
+    if pending_generations == 0:
+        submission = db.execute("select status, reviewer_eligible_at from submissions where id = ?", (submission_id,)).fetchone()
+        if succeeded_generations > 0:
+            if submission is not None and not submission["reviewer_eligible_at"]:
+                db.execute("update submissions set reviewer_eligible_at = ? where id = ?", (now, submission_id))
+                waiting_reviews = db.execute(
+                    """
+                    select * from jobs
+                    where job_type = 'peer_review'
+                      and submission_id = ?
+                      and status = 'waiting_reviewer'
+                    """,
+                    (submission_id,),
+                ).fetchall()
+                for row in waiting_reviews:
+                    db.execute("update jobs set status = ?, updated_at = ? where id = ?", ("queued", now, row["id"]))
+        else:
+            db.execute("update submissions set status = ?, score = ? where id = ?", ("failed", None, submission_id))
+            waiting_reviews = db.execute(
+                """
+                select * from jobs
+                where job_type = 'peer_review'
+                  and submission_id = ?
+                  and status = 'waiting_reviewer'
+                """,
+                (submission_id,),
+            ).fetchall()
+            for row in waiting_reviews:
+                review = dict(row)
+                _fallback_waiting_review(db, review, now)
+                _update_generator_submission_rollup(db, review["generator_submission_id"], now)
+            return
+
+    pending_reviews = db.execute(
+        """
+        select count(*) as count
+        from jobs
+        where job_type = 'peer_review'
+          and generator_submission_id = ?
+          and status in ('queued', 'running', 'waiting_reviewer')
+        """,
+        (submission_id,),
+    ).fetchone()["count"]
+
+    if pending_generations == 0 and succeeded_generations > 0 and pending_reviews == 0:
+        scores = [
+            row["score"]
+            for row in db.execute(
+                """
+                select json_extract(result_json, '$.score') as score
+                from jobs
+                where job_type = 'peer_review'
+                  and generator_submission_id = ?
+                  and status = 'succeeded'
+                """,
+                (submission_id,),
+            )
+            if row["score"] is not None
+        ]
+        average = sum(float(score) for score in scores) / len(scores) if scores else None
+        db.execute("update submissions set status = ?, score = ? where id = ?", ("succeeded", average, submission_id))
+    elif succeeded_generations > 0 or pending_generations > 0:
+        db.execute("update submissions set status = ? where id = ?", ("running", submission_id))
+
+
+def _new_id() -> str:
+    import uuid
+
+    return str(uuid.uuid4())
+
+
 def complete_job(job_id: str, result: dict[str, Any]) -> None:
     now = now_iso()
     with connect() as db:
-        job = db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone()
+        job = row_to_dict(db.execute("select * from jobs where id = ?", (job_id,)).fetchone())
+        if not job:
+            return
+        job_type = job.get("job_type") or "generation"
         db.execute(
             """
             update jobs
@@ -347,9 +648,9 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
             """,
             (
                 "succeeded",
-                json.dumps(result["evaluation"]),
-                result["artifact_s3_prefix"],
-                result["preview_s3_key"],
+                json.dumps(result.get("result")),
+                result.get("artifact_s3_prefix"),
+                result.get("preview_s3_key"),
                 result["generation_s3_prefix"],
                 result["evaluation_s3_prefix"],
                 result["agent_info_s3_key"],
@@ -363,16 +664,10 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
                 job_id,
             ),
         )
-        scores = [
-            row["score"]
-            for row in db.execute("select json_extract(result_json, '$.score') as score from jobs where submission_id = ? and status = 'succeeded'", (job["submission_id"],))
-            if row["score"] is not None
-        ]
-        remaining = db.execute("select count(*) as count from jobs where submission_id = ? and status in ('queued', 'running')", (job["submission_id"],)).fetchone()["count"]
-        if remaining == 0:
-            avg = sum(float(score) for score in scores) / len(scores) if scores else None
-            status = "succeeded" if scores else "failed"
-            db.execute("update submissions set status = ?, score = ? where id = ?", (status, avg, job["submission_id"]))
+        generator_submission_id = job["generator_submission_id"] or job["submission_id"]
+        if job_type == "generation":
+            queue_peer_reviews_for_generation(db, job_id, now)
+        _update_generator_submission_rollup(db, generator_submission_id, now)
 
 
 def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_files: dict[str, str | None]) -> None:
@@ -406,9 +701,7 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
 def fail_job(job_id: str, exc: Exception) -> None:
     now = now_iso()
     with connect() as db:
-        job = row_to_dict(db.execute("select submission_id from jobs where id = ?", (job_id,)).fetchone())
+        job = row_to_dict(db.execute("select * from jobs where id = ?", (job_id,)).fetchone())
         db.execute("update jobs set status = ?, error = ?, updated_at = ? where id = ?", ("failed", str(exc), now, job_id))
         if job:
-            remaining = db.execute("select count(*) as count from jobs where submission_id = ? and status in ('queued', 'running')", (job["submission_id"],)).fetchone()["count"]
-            if remaining == 0:
-                db.execute("update submissions set status = ? where id = ?", ("failed", job["submission_id"]))
+            _update_generator_submission_rollup(db, job["generator_submission_id"] or job["submission_id"], now)

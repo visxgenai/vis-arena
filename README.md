@@ -17,6 +17,7 @@ apps/server/                 FastAPI backend
 apps/evaluation-server-frontend/
                              Active frontend submodule
 docs/arena_protocol.md       Task, generation, and evaluation interfaces
+docs/peer_review_arena.md    Peer-review submission queue lifecycle
 examples/tasks/              Example benchmark task
 packages/arena-sdk/          Python SDK and CLI
 schemas/                     JSON schemas for protocol payloads
@@ -41,7 +42,9 @@ Every submission bundle must expose an executable with these commands:
 
 `evaluate` writes a JSON evaluation report with a score, rubric breakdown, browser observations, source observations, and reproducibility metadata.
 
-See [docs/arena_protocol.md](docs/arena_protocol.md) for the full contract.
+See [docs/arena_protocol.md](docs/arena_protocol.md) for the full contract and
+[docs/peer_review_arena.md](docs/peer_review_arena.md) for the submission queue
+lifecycle.
 
 ## Local Development
 
@@ -66,14 +69,14 @@ Participant journey (SDK/CLI):
 uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
 vis-arena init my-agent && cd my-agent
 vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
-vis-arena submit . --dataset monthly-sales
+vis-arena submit .
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
 
 `submit` prints the follow-up commands. Use `vis-arena submissions watch <id>`
 to poll progress and `vis-arena submissions preview <id>` to print the generated
-visualization URL.
+visualization URL. Submissions run against every active public dataset.
 
 Frontend:
 

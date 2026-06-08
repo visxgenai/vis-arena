@@ -285,7 +285,7 @@ def make_llm_client(purpose: str) -> OpenAIChatClient | ArenaChatClient:
         raise SystemExit(
             "OPENAI_API_KEY is not set.\n"
             "  Local testing: export OPENAI_API_KEY=sk-... and re-run.\n"
-            "  Submitting:   run `vis-arena submit . --dataset ieee-vis-publications`; the arena provides the key."
+            "  Submitting:   run `vis-arena submit .`; the arena provides the key."
         )
     return OpenAIChatClient()
 

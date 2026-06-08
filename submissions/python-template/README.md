@@ -34,7 +34,7 @@ Run `./agent.py models` inside a cloud job to print the live list.
 From your scaffolded directory (post-`vis-arena init`):
 
 ```bash
-vis-arena submit . --dataset ieee-vis-publications
+vis-arena submit .
 ```
 
 ## Optional: test locally

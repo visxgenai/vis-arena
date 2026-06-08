@@ -8,7 +8,7 @@ uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=package
 vis-arena init my-agent && cd my-agent
 vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
 vis-arena datasets list
-vis-arena submit . --dataset monthly-sales
+vis-arena submit .
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
@@ -17,4 +17,4 @@ Uploads and downloads use backend-issued presigned S3 URLs; the SDK uploads ZIP 
 
 The CLI stores the arena token in `~/.config/vis-arena/config.json` unless `VIS_ARENA_API_TOKEN` is already set.
 
-Submitted jobs record agent runtime, phase logs, `agent-info.json`, the evaluation report, and generation/evaluation trajectories when server-side trajectory capture is enabled.
+Submitted generation jobs record agent runtime, phase logs, `agent-info.json`, generated artifacts, and generation trajectories when server-side trajectory capture is enabled. Peer-review jobs run other users' latest eligible agents and record evaluation reports, evaluation logs, review trajectories, and scores.

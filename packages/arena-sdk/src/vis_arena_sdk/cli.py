@@ -169,7 +169,7 @@ def version(server_url: Optional[str] = None) -> None:
 def submit(
     path: Path,
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Submission name. Defaults to the file or folder name."),
-    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Dataset to run this submission against."),
+    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Deprecated; submissions run against all active public datasets."),
     server_url: Optional[str] = None,
     token: Optional[str] = None,
 ) -> None:
@@ -219,12 +219,12 @@ def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, 
 def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     client = _client(server_url, token)
     try:
-        dataset = client.resolve_dataset(dataset_id) if dataset_id else None
         submission = client.upload_submission(
-            path, name=name, dataset_id=dataset.id if dataset else None
+            path, name=name, dataset_id=None
         )
-        target = f'"{dataset.name}"' if dataset else "all public datasets"
-        typer.echo(f"Submission {submission.id} queued against {target}.")
+        if dataset_id:
+            typer.echo("--dataset is deprecated and ignored; submissions run against all active public datasets.", err=True)
+        typer.echo(f"Submission {submission.id} queued for all active public datasets.")
         typer.echo(f"  Track progress:  vis-arena submissions watch {submission.id}")
         typer.echo(f"  Preview artifact: vis-arena submissions preview {submission.id}")
     finally:
@@ -299,7 +299,7 @@ def submissions_preview(submission_id: str, server_url: Optional[str] = None, to
         if preview_jobs:
             _print_submission_preview_urls(client, preview_jobs)
             return
-        if submission.status in {"queued", "running", "uploading"} or any(job.get("status") in {"queued", "running"} for job in jobs):
+        if submission.status in {"queued", "running", "uploading"} or any(job.get("status") in {"queued", "running", "waiting_reviewer"} for job in jobs):
             typer.echo(f"Submission {submission_id} is still {submission.status}.")
             typer.echo(f"  Track progress: vis-arena submissions watch {submission_id}")
             raise typer.Exit(2)
@@ -320,25 +320,40 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
             preview = "preview" if result.get("preview_s3_key") else ""
             run_seconds = result.get("run_seconds")
             duration = "" if run_seconds is None else f"{float(run_seconds):.1f}s"
-            typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
+            job_type = result.get("job_type") or "generation"
+            typer.echo(f"{result['id']}\t{job_type}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
     finally:
         client.close()
 
 
 def _format_submission_status(status: str, score: float | None, jobs: list[dict], usage: dict) -> str:
-    job_statuses = {str(job.get("status") or "unknown") for job in jobs}
+    generation_jobs = [job for job in jobs if (job.get("job_type") or "generation") == "generation"]
+    review_jobs = [job for job in jobs if job.get("job_type") == "peer_review"]
     run_seconds = max((float(job["run_seconds"]) for job in jobs if job.get("run_seconds") is not None), default=None)
+    review_run_seconds = max((float(job["run_seconds"]) for job in review_jobs if job.get("run_seconds") is not None), default=None)
     total_tokens = int((usage.get("summary") or {}).get("total_tokens") or 0)
     parts = [status]
-    if job_statuses and (len(job_statuses) > 1 or status not in job_statuses):
-        parts.append("tasks=" + ",".join(sorted(job_statuses)))
+    if generation_jobs:
+        parts.append("generation=" + _summarize_job_statuses(generation_jobs))
+    if review_jobs:
+        parts.append("reviews=" + _summarize_job_statuses(review_jobs).replace("waiting_reviewer", "waiting"))
     if run_seconds is not None:
         parts.append(f"runtime={run_seconds:.1f}s")
+    if review_run_seconds is not None:
+        parts.append(f"review_runtime={review_run_seconds:.1f}s")
     if total_tokens:
         parts.append(f"tokens={total_tokens:,}")
     if score is not None:
         parts.append(f"score={score:.2f}")
     return "  ".join(parts)
+
+
+def _summarize_job_statuses(jobs: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for job in jobs:
+        status = str(job.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return ",".join(f"{status}:{counts[status]}" for status in sorted(counts))
 
 
 def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> None:

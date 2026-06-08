@@ -174,9 +174,14 @@ Recommended evaluator tools:
 2. User uploads a dataset/task bundle or downloads public benchmark datasets.
 3. User uploads an agent ZIP.
 4. Backend stores dataset and submission bundles in S3 through presigned upload URLs.
-5. Worker claims queued jobs and runs `agent info`, `agent generate`, and `agent evaluate` inside a Docker sandbox for each task.
-6. Backend stores generated source, dist artifacts, screenshots, logs, reports, and scores in S3 and SQLite metadata.
-7. Frontend previews dist artifacts in a sandboxed iframe and shows evaluation evidence and leaderboards.
+5. Finalizing a submission creates one generation job for every task in every active public dataset.
+6. Worker generation jobs run `agent info` and `agent generate` inside a Docker sandbox, then store generated source, dist artifacts, logs, trajectories, and previews in S3 and SQLite metadata.
+7. After each generation succeeds, the backend creates peer-review jobs using the latest finalized agent from each other user as of artifact completion.
+8. Worker peer-review jobs run only `agent evaluate` against the target artifact, then store evaluation reports, logs, trajectories, scores, and errors.
+9. Frontend previews dist artifacts in a sandboxed iframe and shows peer-review evidence and leaderboards.
+
+See [peer_review_arena.md](peer_review_arena.md) for reviewer eligibility,
+fallback, scoring, and submission rate-limit details.
 
 ## Authentication and LLM Token Brokerage
 
