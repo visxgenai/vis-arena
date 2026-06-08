@@ -286,18 +286,32 @@ def serve_job_preview(job_id: str, asset_path: str, token: str) -> Response:
 
 
 @app.get("/v1/leaderboard")
-def leaderboard() -> dict:
+def leaderboard(request: Request) -> dict:
     with connect() as db:
         rows = db.execute(
             """
-            select submissions.id, submissions.name, submissions.score, users.name as owner_name
+            select submissions.id, submissions.name, submissions.score, users.name as owner_name,
+                   (select j.id from jobs j
+                    where j.submission_id = submissions.id and j.preview_s3_key is not null
+                    order by j.completed_at desc
+                    limit 1) as preview_job_id
             from submissions join users on users.id = submissions.owner_id
             where submissions.status = 'succeeded' and submissions.score is not null
             order by submissions.score desc
             limit 100
             """
         ).fetchall()
-    return {"items": [dict(row) for row in rows]}
+    items = []
+    for row in rows:
+        entry = dict(row)
+        preview_job_id = entry.pop("preview_job_id", None)
+        entry["preview_url"] = (
+            str(request.url_for("redirect_job_preview", job_id=preview_job_id))
+            if preview_job_id
+            else None
+        )
+        items.append(entry)
+    return {"items": items}
 
 
 @app.post("/v1/llm/token", response_model=LLMTokenResponse)
