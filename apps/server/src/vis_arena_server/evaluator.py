@@ -75,25 +75,35 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
 
         reports_dir.mkdir(parents=True, exist_ok=True)
 
-        script = render_container_script()
-        (root / "run.sh").write_text(script, encoding="utf-8")
-        os.chmod(root / "run.sh", 0o755)
-        runtime = run_docker(root, job)
-        runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
-        update_job_runtime_metadata(job["id"], runtime, runtime_files)
-        if runtime["returncode"] != 0:
-            raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
-
-        evaluation = json.loads((work_dir / "evaluate" / "evaluation.json").read_text(encoding="utf-8"))
-        make_generation_artifacts_zip(work_dir, artifacts_zip)
         artifact_prefix = f"jobs/{job['id']}/generation/artifacts"
         preview_prefix = f"jobs/{job['id']}/generation/preview"
+
+        write_container_script(root, "generation")
+        generation_runtime = run_docker(root, job, phase="generation")
+        if generation_runtime["returncode"] != 0:
+            runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
+            update_job_runtime_metadata(job["id"], generation_runtime, runtime_files)
+            raise RuntimeError(f"Docker generation failed with exit {generation_runtime['returncode']}:\n{generation_runtime['log_tail']}")
+
+        make_generation_artifacts_zip(work_dir, artifacts_zip)
         preview_s3_key = None
         upload_s3_file(artifacts_zip, f"{artifact_prefix}.zip", "application/zip")
         preview_dist = work_dir / "generate" / "dist"
         if (preview_dist / "index.html").exists():
             upload_s3_directory(preview_dist, preview_prefix)
             preview_s3_key = f"{preview_prefix}/index.html"
+        update_job_artifact_metadata(job["id"], artifact_prefix, preview_s3_key)
+
+        artifact_url = f"{_container_server_url()}/v1/jobs/{job['id']}/preview"
+        write_container_script(root, "evaluation")
+        evaluation_runtime = run_docker(root, job, phase="evaluation", artifact_url=artifact_url)
+        runtime = combine_runtimes(generation_runtime, evaluation_runtime)
+        runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
+        update_job_runtime_metadata(job["id"], runtime, runtime_files)
+        if evaluation_runtime["returncode"] != 0:
+            raise RuntimeError(f"Docker evaluation failed with exit {evaluation_runtime['returncode']}:\n{evaluation_runtime['log_tail']}")
+
+        evaluation = json.loads((work_dir / "evaluate" / "evaluation.json").read_text(encoding="utf-8"))
         return {
             "evaluation": evaluation,
             "score": evaluation.get("score"),
@@ -138,7 +148,16 @@ def make_generation_artifacts_zip(work_dir: Path, target_zip: Path) -> None:
         make_zip(staging, target_zip)
 
 
-def render_container_script() -> str:
+def write_container_script(root: Path, phase: str) -> None:
+    script = render_container_script(phase)
+    path = root / "run.sh"
+    path.write_text(script, encoding="utf-8")
+    os.chmod(path, 0o755)
+
+
+def render_container_script(phase: str) -> str:
+    if phase not in {"generation", "evaluation"}:
+        raise ValueError(f"Unknown container phase: {phase}")
     return """#!/usr/bin/env bash
 set -euo pipefail
 mkdir -p /arena/home /arena/.uv-cache /arena/.venv /arena/reports/generation /arena/reports/evaluation
@@ -228,35 +247,30 @@ finish_phase() {
   echo "[$(date -Iseconds)] phase_end ${phase}" >> "$log"
   trace_event "$trace" phase_end "$phase"
 }
-stage_dist_for_evaluate() {
-  # After generate completes, mirror dist/ into the evaluate workdir so the
-  # agent.py contract can serve it locally during evaluate.
-  if [ -d /arena/work/generate/dist ]; then
-    rm -rf /arena/work/evaluate/dist
-    cp -r /arena/work/generate/dist /arena/work/evaluate/dist
-  fi
-}
 cd /arena/submission
-if [ -f pyproject.toml ]; then
-  python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
-  run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
-  run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate /arena/work/generate
+if [ "${VIS_ARENA_PHASE}" = "generation" ]; then
+  if [ -f pyproject.toml ]; then
+    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
+    run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate /arena/work/generate
+  else
+    run_phase generation info ./agent info --output /arena/reports/generation/agent-info.json
+    run_phase generation generate ./agent generate /arena/work/generate
+  fi
   finish_phase generation
-  stage_dist_for_evaluate
-  run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate /arena/work/evaluate
-  finish_phase evaluation
 else
-  run_phase generation info ./agent info --output /arena/reports/generation/agent-info.json
-  run_phase generation generate ./agent generate /arena/work/generate
-  finish_phase generation
-  stage_dist_for_evaluate
-  run_phase evaluation evaluate ./agent evaluate /arena/work/evaluate
+  if [ -f pyproject.toml ]; then
+    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate /arena/work/evaluate
+  else
+    run_phase evaluation evaluate ./agent evaluate /arena/work/evaluate
+  fi
   finish_phase evaluation
 fi
 """
 
 
-def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
+def run_docker(root: Path, job: dict[str, Any], *, phase: str, artifact_url: str | None = None) -> dict[str, Any]:
     arena_token = create_token(job["owner_id"])
     cmd = [
         "docker",
@@ -288,6 +302,8 @@ def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         f"VIS_ARENA_LLM_MODEL={settings.bedrock_default_model_id if settings.llm_provider == 'bedrock' else os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
         "-e",
         f"VIS_ARENA_LLM_MODELS={','.join(settings.bedrock_model_ids) if settings.llm_provider == 'bedrock' else os.environ.get('VIS_ARENA_OPENAI_MODEL', 'gpt-4.1-mini')}",
+        "-e",
+        f"VIS_ARENA_PHASE={phase}",
         "-v",
         f"{root}:/arena",
         "-w",
@@ -296,6 +312,8 @@ def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         "bash",
         "/arena/run.sh",
     ]
+    if artifact_url:
+        cmd[cmd.index("-v"):cmd.index("-v")] = ["-e", f"VIS_ARENA_ARTIFACT_URL={artifact_url}"]
     started_at = now_iso()
     started = time.monotonic()
     try:
@@ -315,6 +333,16 @@ def run_docker(root: Path, job: dict[str, Any]) -> dict[str, Any]:
         "run_seconds": run_seconds,
         "returncode": returncode,
         "log_tail": output[-4000:],
+    }
+
+
+def combine_runtimes(*runtimes: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "started_at": runtimes[0]["started_at"],
+        "completed_at": runtimes[-1]["completed_at"],
+        "run_seconds": round(sum(float(runtime["run_seconds"]) for runtime in runtimes), 3),
+        "returncode": runtimes[-1]["returncode"],
+        "log_tail": "\n".join(str(runtime["log_tail"]) for runtime in runtimes)[-4000:],
     }
 
 
@@ -368,6 +396,19 @@ def _container_server_url() -> str:
     if settings.public_base_url in {"http://localhost:8000", "http://127.0.0.1:8000"}:
         return "http://host.docker.internal:8000"
     return settings.public_base_url
+
+
+def update_job_artifact_metadata(job_id: str, artifact_s3_prefix: str, preview_s3_key: str | None) -> None:
+    now = now_iso()
+    with connect() as db:
+        db.execute(
+            """
+            update jobs
+            set artifact_s3_prefix = ?, preview_s3_key = ?, updated_at = ?
+            where id = ?
+            """,
+            (artifact_s3_prefix, preview_s3_key, now, job_id),
+        )
 
 
 def complete_job(job_id: str, result: dict[str, Any]) -> None:
