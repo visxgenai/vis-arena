@@ -201,15 +201,11 @@ def test_init_force_writes_into_nonempty_dir(tmp_path) -> None:
 
 def test_submit_prints_guided_next_steps(monkeypatch, tmp_path) -> None:
     from vis_arena_sdk import cli
-    from vis_arena_sdk.models import Dataset, Submission
+    from vis_arena_sdk.models import Submission
 
     class FakeClient:
-        def resolve_dataset(self, value):
-            assert value == "monthly-sales"
-            return Dataset(id="ds-1", name="monthly-sales", visibility="public", task_count=1)
-
         def upload_submission(self, path, name, dataset_id=None):
-            assert dataset_id == "ds-1"
+            assert dataset_id is None
             return Submission(id="sub-9", name=name, status="queued")
 
         def close(self):
@@ -223,7 +219,8 @@ def test_submit_prints_guided_next_steps(monkeypatch, tmp_path) -> None:
     result = runner.invoke(app, ["submit", str(bundle), "--dataset", "monthly-sales"])
 
     assert result.exit_code == 0, result.output
-    assert 'Submission sub-9 queued against "monthly-sales".' in result.output
+    assert "Submission sub-9 queued for all active public datasets." in result.output
+    assert "--dataset is deprecated and ignored" in result.output
     assert "vis-arena submissions watch sub-9" in result.output
     assert "vis-arena submissions preview sub-9" in result.output
 

@@ -52,11 +52,18 @@ def init_db() -> None:
               score real,
               s3_key text,
               storage_path text not null default '',
+              finalized_at text,
+              reviewer_eligible_at text,
               created_at text not null
             );
             create table if not exists jobs (
               id text primary key,
               submission_id text not null,
+              job_type text not null default 'generation',
+              generator_submission_id text,
+              review_target_job_id text,
+              reviewer_user_id text,
+              reviewer_cutoff_at text,
               dataset_id text,
               task_id text,
               status text not null,
@@ -95,6 +102,13 @@ def init_db() -> None:
         )
         _add_column(db, "datasets", "s3_key text")
         _add_column(db, "submissions", "s3_key text")
+        _add_column(db, "submissions", "finalized_at text")
+        _add_column(db, "submissions", "reviewer_eligible_at text")
+        _add_column(db, "jobs", "job_type text not null default 'generation'")
+        _add_column(db, "jobs", "generator_submission_id text")
+        _add_column(db, "jobs", "review_target_job_id text")
+        _add_column(db, "jobs", "reviewer_user_id text")
+        _add_column(db, "jobs", "reviewer_cutoff_at text")
         _add_column(db, "jobs", "task_id text")
         _add_column(db, "jobs", "artifact_s3_prefix text")
         _add_column(db, "jobs", "preview_s3_key text")

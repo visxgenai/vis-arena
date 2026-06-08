@@ -1,12 +1,12 @@
 name: python-openai-template-agent
-version: 0.2.0
+version: 0.3.0
 runtime:
   language: python
   python: ">=3.11"
 commands:
   info: "./agent.py info --output agent-info.json"
-  generate: "./agent.py generate --task task.md --data-dir data --output-dir output"
-  evaluate: "./agent.py evaluate --task task.md --data-dir data --source-dir output/source --dist-dir output/dist --output evaluation.json"
+  generate: "./agent.py generate ."
+  evaluate: "./agent.py evaluate ."
 llm:
   providers:
     - openai

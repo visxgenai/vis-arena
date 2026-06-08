@@ -8,7 +8,7 @@ This document defines the first version of the Vis Arena task, generation, and e
 - Data can be any file format, referenced from the frontmatter or linked from the task body.
 - Submissions are executable bundles, not Python-only libraries.
 - Generation produces both source code and static browser-ready artifacts.
-- Evaluation primarily uses browser automation. Source inspection is reserved for things that are hard to observe through a browser, such as animation timing, data transformations, or accessibility metadata that needs static inspection.
+- Evaluation interacts with the rendered artifact through Playwright against a localhost HTTP URL — it does not read the artifact's source code.
 - Cloud runs may receive arena-brokered LLM access. Local runs use participant-owned provider keys.
 
 ## Task Format
@@ -25,21 +25,6 @@ data:
   - path: data/sales.csv
     role: primary
     media_type: text/csv
-rubric:
-  total_points: 100
-  criteria:
-    - id: correctness
-      points: 35
-      description: Accurately encodes all monthly sales values.
-    - id: usability
-      points: 25
-      description: Provides readable labels, units, and hover details.
-    - id: visual_design
-      points: 20
-      description: Uses clear hierarchy and appropriate chart choices.
-    - id: robustness
-      points: 20
-      description: Works at desktop and mobile widths without overlap.
 constraints:
   artifact_entrypoint: index.html
   viewport_sizes:
@@ -49,13 +34,20 @@ evaluation:
   preferred_methods:
     - browser_automation
     - screenshot_analysis
-    - source_inspection
 ---
 
 Build an interactive web visualization for the provided sales data...
 ```
 
-The Markdown body should describe the user-facing task in natural language. The frontmatter supplies stable metadata for automated runners.
+The Markdown body should describe the user-facing task in natural language.
+The frontmatter supplies stable metadata for automated runners.
+
+**Rubrics are intentionally not specified here.** The evaluator agent picks
+criteria itself by reading the task. Embedding a numeric rubric in `task.md`
+would incentivize the generation agent (which also reads `task.md`) to
+optimize directly for the rubric rather than for solving the task well.
+`evaluation.json` still carries a `criteria` field — that is the evaluator's
+output, not a pre-baked task spec.
 
 ## Submission Bundle
 
@@ -64,41 +56,81 @@ A submission ZIP must include:
 - `agent.py` or `agent`: executable entrypoint.
 - `submission.yaml`: name, version, runtime, and command metadata.
 - Dependency files such as `pyproject.toml`, `requirements.txt`, `package.json`, or lockfiles.
+- Optional `agent.md`: in-bundle contract reference (useful when an LLM-driven
+  agent inspects its own bundle).
 - Optional source files.
 
-The executable must implement:
+The executable must implement three commands:
 
 ```bash
-agent.py info --output agent-info.json
-agent.py generate --task task.md --data-dir data --output-dir output
-agent.py evaluate --task task.md --data-dir data --source-dir output/source --dist-dir output/dist --output evaluation.json
+agent.py info     --output agent-info.json
+agent.py generate <workdir>
+agent.py evaluate <workdir>
 ```
 
 Commands must be non-interactive and deterministic enough for repeatable sandbox evaluation.
 
-## Generation Output
+## Working directory contract
 
-`generate` must create:
+`generate` and `evaluate` each receive a single working directory. The worker
+stages everything the agent needs at fixed relative paths inside the workdir,
+and reads the agent's outputs from fixed paths inside the same workdir after
+the agent exits.
+
+**Generate workdir:**
 
 ```text
-output/
-  source/
-    ...
-  dist/
-    index.html
-    ...
-  generation.json
+workdir/
+  task.md           # in   — staged by worker
+  data/             # in   — staged by worker (read-only by convention)
+  source/           # out  — editable web source written by the agent
+  dist/             # out  — browser-ready artifact written by the agent
+    index.html      #         (required)
+  generation.json   # out  — slim metadata (see below)
 ```
 
-`generation.json`:
+**Evaluate workdir** (intentionally minimal):
+
+```text
+workdir/
+  task.md           # in
+  evaluation.json   # out — the evaluation report (see below)
+```
+
+No `data/`, no `dist/`, no `source/`. The evaluator's only access to the
+artifact is through `ARTIFACT_URL` (below). This shape is identical for
+self-evaluation, peer-evaluation, and central-judge evaluation — the agent
+cannot tell them apart and the same code path serves all three.
+
+## Artifact URL (evaluate)
+
+`agent.py` resolves the artifact URL in one of two ways and passes it to the
+participant hook:
+
+```python
+def evaluate(workdir: Path, artifact_url: str) -> dict
+```
+
+1. **Arena evaluation** (self, peer, or central judge): the worker injects
+   `VIS_ARENA_ARTIFACT_URL` pointing at the artifact's S3-served preview, e.g.
+   `https://<server>/v1/jobs/<artifact-job-id>/preview/index.html`. The agent
+   has no need to know whose artifact it is — same URL shape regardless.
+2. **Local testing** (no env var): `agent.py` falls back to a localhost HTTP
+   server bound to `workdir/dist/index.html`. URL looks like
+   `http://127.0.0.1:<port>/index.html`; the port is OS-assigned per run.
+
+Hook code uses `artifact_url` verbatim with Playwright (`page.goto(...)`).
+Don't reconstruct it or hardcode a port.
+
+## Generation Output
+
+`generation.json` (slim — most path fields are conventional under the workdir
+contract and have been removed):
 
 ```json
 {
   "schema_version": "vis-arena.generation.v1",
   "task_id": "monthly-sales-v1",
-  "entrypoint": "index.html",
-  "source_dir": "source",
-  "dist_dir": "dist",
   "created_at": "2026-04-26T00:00:00Z",
   "notes": "Generated by template agent."
 }
@@ -106,7 +138,7 @@ output/
 
 ## Evaluation Output
 
-`evaluate` must write a JSON report:
+`evaluation.json`:
 
 ```json
 {
@@ -125,7 +157,7 @@ output/
   ],
   "browser": {
     "tool": "playwright",
-    "entrypoint_url": "file:///run/dist/index.html",
+    "entrypoint_url": "http://127.0.0.1:38192/index.html",
     "viewports": [
       {
         "width": 1440,
@@ -135,9 +167,6 @@ output/
       }
     ]
   },
-  "source_observations": [
-    "CSS includes a media query for narrow screens."
-  ],
   "artifacts": {
     "screenshots": ["screenshots/desktop.png"],
     "logs": []
@@ -149,23 +178,24 @@ output/
 }
 ```
 
-Scores are normalized to `0..max_score`. Evaluation agents should explain evidence for every criterion.
+Scores are normalized to `0..max_score`. Evaluation agents should explain
+evidence for every criterion. `source_observations` is dropped from the
+evaluation schema — source is not staged for the evaluate phase.
 
 ## Evaluation Tooling Expectations
 
 Evaluation agents should prefer browser tools:
 
-- Open the generated artifact with Playwright.
+- Open `artifact_url` with Playwright.
 - Test the declared viewport sizes.
 - Inspect DOM structure, accessible names, rendered dimensions, console errors, and user interactions.
 - Capture screenshots for auditability.
-- Use source inspection only for items that are impractical to observe through the UI.
 
 Recommended evaluator tools:
 
-- `run_playwright_script(script: str)`: execute a Playwright script against `dist/`.
+- `run_playwright_script(script: str)`: execute a Playwright script against `artifact_url`.
 - `browser_snapshot()`: capture DOM summary and screenshots.
-- `read_file(path)`, `list_files(path)`, `search_files(pattern)`: inspect source and dist artifacts.
+- `read_file(path)`: inspect the workdir (task.md, data/, dist/ assets).
 - `run_command(command)`: run safe local validators such as linters or static asset checks.
 
 ## Backend Flow
@@ -174,9 +204,14 @@ Recommended evaluator tools:
 2. User uploads a dataset/task bundle or downloads public benchmark datasets.
 3. User uploads an agent ZIP.
 4. Backend stores dataset and submission bundles in S3 through presigned upload URLs.
-5. Worker claims queued jobs and runs `agent info`, `agent generate`, and `agent evaluate` inside a Docker sandbox for each task.
-6. Backend stores generated source, dist artifacts, screenshots, logs, reports, and scores in S3 and SQLite metadata.
-7. Frontend previews dist artifacts in a sandboxed iframe and shows evaluation evidence and leaderboards.
+5. Finalizing a submission creates one generation job for every task in every active public dataset.
+6. Worker generation jobs run `agent info` and `agent generate` inside a Docker sandbox, then store generated source, dist artifacts, logs, trajectories, and previews in S3 and SQLite metadata.
+7. After each generation succeeds, the backend creates peer-review jobs using the latest finalized agent from each other user as of artifact completion.
+8. Worker peer-review jobs run only `agent evaluate` against the target artifact, then store evaluation reports, logs, trajectories, scores, and errors.
+9. Frontend previews dist artifacts in a sandboxed iframe and shows peer-review evidence and leaderboards.
+
+See [peer_review_arena.md](peer_review_arena.md) for reviewer eligibility,
+fallback, scoring, and submission rate-limit details.
 
 ## Authentication and LLM Token Brokerage
 

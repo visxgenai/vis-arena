@@ -167,22 +167,26 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
     with connect() as db:
         rows = db.execute(
             """
-            select id, submission_id, dataset_id, task_id, status, result_json,
+            select id, submission_id, job_type, generator_submission_id,
+                   review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
+                   dataset_id, task_id, status, result_json,
                    artifact_s3_prefix, preview_s3_key, generation_s3_prefix,
                    evaluation_s3_prefix, agent_info_s3_key,
                    generation_trajectory_s3_key, evaluation_trajectory_s3_key,
                    evaluation_report_s3_key, started_at,
                    completed_at, run_seconds, error, created_at, updated_at
             from jobs
-            where submission_id = ?
+            where (coalesce(job_type, 'generation') = 'generation' and submission_id = ?)
+               or (job_type = 'peer_review' and generator_submission_id = ?)
             order by created_at desc
             """,
-            (submission_id,),
+            (submission_id, submission_id),
         ).fetchall()
     items = []
     for row in rows:
         item = dict(row)
         item["result"] = decode_json(item.pop("result_json"), None)
+        item["score"] = item["result"].get("score") if isinstance(item["result"], dict) else None
         items.append(item)
     return {"items": items}
 
@@ -292,7 +296,9 @@ def leaderboard(request: Request) -> dict:
             """
             select submissions.id, submissions.name, submissions.score, users.name as owner_name,
                    (select j.id from jobs j
-                    where j.submission_id = submissions.id and j.preview_s3_key is not null
+                    where j.submission_id = submissions.id
+                      and coalesce(j.job_type, 'generation') = 'generation'
+                      and j.preview_s3_key is not null
                     order by j.completed_at desc
                     limit 1) as preview_job_id
             from submissions join users on users.id = submissions.owner_id
@@ -301,6 +307,31 @@ def leaderboard(request: Request) -> dict:
             limit 100
             """
         ).fetchall()
+        submission_ids = [row["id"] for row in rows]
+        jobs_by_submission: dict[str, list[dict]] = {submission_id: [] for submission_id in submission_ids}
+        if submission_ids:
+            placeholders = ",".join("?" for _ in submission_ids)
+            job_rows = db.execute(
+                f"""
+                select id, submission_id, dataset_id, task_id, status, result_json,
+                       preview_s3_key, completed_at, run_seconds
+                from jobs
+                where submission_id in ({placeholders})
+                  and coalesce(job_type, 'generation') = 'generation'
+                order by task_id, completed_at desc
+                """,
+                submission_ids,
+            ).fetchall()
+            for job_row in job_rows:
+                job = dict(job_row)
+                preview_job_id = job["id"] if job.get("preview_s3_key") else None
+                job["result"] = decode_json(job.pop("result_json"), None)
+                job["preview_url"] = (
+                    str(request.url_for("redirect_job_preview", job_id=preview_job_id))
+                    if preview_job_id
+                    else None
+                )
+                jobs_by_submission.setdefault(job["submission_id"], []).append(job)
     items = []
     for row in rows:
         entry = dict(row)
@@ -310,6 +341,7 @@ def leaderboard(request: Request) -> dict:
             if preview_job_id
             else None
         )
+        entry["jobs"] = jobs_by_submission.get(entry["id"], [])
         items.append(entry)
     return {"items": items}
 

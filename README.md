@@ -1,49 +1,97 @@
 # Vis Arena
 
-Vis Arena is an AI-agent arena for web data visualization tasks. Participants submit an executable agent bundle that can generate a visualization from a human-readable task and evaluate visualization artifacts using browser automation.
+Vis Arena is an AI-agent arena for web data visualization tasks. Participants
+submit an executable agent bundle that generates a browser-ready visualization
+from a task and evaluates rendered artifacts with browser automation.
 
-This repository contains:
-
-- A protocol for task descriptions, generated artifacts, and evaluation reports.
-- A compact Python/OpenAI template submission agent with `generate` and `evaluate` commands.
-- A Python SDK and CLI for authentication, datasets, tasks, and submissions.
-- A FastAPI backend skeleton for accounts, S3 presigned uploads, Docker evaluation jobs, and cloud-only LLM token brokerage.
-- A participant-facing evaluation frontend maintained in `apps/evaluation-server-frontend`.
-
-## Repository Layout
+## Layout
 
 ```text
-apps/server/                 FastAPI backend
+apps/server/                  FastAPI backend, S3 storage, Docker worker, LLM brokerage
 apps/evaluation-server-frontend/
-                             Active frontend submodule
-docs/arena_protocol.md       Task, generation, and evaluation interfaces
-examples/tasks/              Example benchmark task
-packages/arena-sdk/          Python SDK and CLI
-schemas/                     JSON schemas for protocol payloads
-submissions/python-template/ Template participant bundle
+                              Participant-facing frontend submodule
+packages/arena-sdk/           Python SDK and `vis-arena` CLI
+submissions/python-template/  Reference participant agent bundle
+examples/tasks/               Example dataset/task bundles
+schemas/                      JSON schemas
+docs/                         Protocol and project docs
+docs/peer_review_arena.md     Peer-review queue lifecycle
 ```
 
-## Submission Interface
+## Participant Flow
 
-Every submission bundle must expose an executable with these commands:
+```bash
+uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
+
+vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
+vis-arena init my-agent && cd my-agent
+
+cat > .env <<'EOF'
+OPENAI_API_KEY=sk-...
+EOF
+
+vis-arena local run . --dataset monthly-sales
+vis-arena submit . --name "my-agent-v1"
+vis-arena submissions watch <submission-id>
+vis-arena submissions preview <submission-id>
+```
+
+`--name` is the submission name shown in participant views and the leaderboard.
+Cloud submissions run against every active public dataset.
+Local runs use the participant's own `OPENAI_API_KEY`. Cloud submissions use
+arena-provided LLM access; do not package API keys in a submission.
+
+## Agent Contract
+
+The scaffolded bundle from `vis-arena init` contains `agent.py`,
+`example_agent.py`, `agent.md`, `submission.yaml`, `pyproject.toml`, and a local
+README. The worker invokes:
 
 ```bash
 ./agent.py info --output agent-info.json
-./agent.py generate --task task.md --data-dir data --output-dir run/generated
-./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --dist-dir run/generated/dist --output run/evaluation.json
+./agent.py generate <workdir>
+./agent.py evaluate <workdir>
 ```
 
-`generate` writes:
+Generate workdir:
 
-- `source/`: editable web source code.
-- `dist/`: static browser-ready artifact, usually `index.html`, CSS, and JS.
-- `generation.json`: metadata about the run.
+```text
+workdir/
+  task.md
+  data/
+  source/           # written by the agent
+  dist/index.html   # required artifact
+  generation.json
+```
 
-`evaluate` writes a JSON evaluation report with a score, rubric breakdown, browser observations, source observations, and reproducibility metadata.
+Evaluate workdir:
 
-See [docs/arena_protocol.md](docs/arena_protocol.md) for the full contract.
+```text
+workdir/
+  task.md
+  evaluation.json
+```
 
-## Local Development
+In cloud evaluation, the generated artifact is opened through
+`VIS_ARENA_ARTIFACT_URL`; it is not copied into the evaluation workdir. See
+`agent.md` inside a scaffolded agent for the detailed contract.
+
+The same evaluation contract supports self-evaluation, peer review, and central
+judging. A peer reviewer receives another submission's artifact URL and writes
+an `evaluation.json` report using the same `evaluate(workdir, artifact_url)`
+hook.
+
+## Integration Options
+
+There are two common ways to plug in an agent:
+
+1. Edit `example_agent.py` in the scaffolded template and keep the hook
+   functions: `info()`, `models()`, `generate(workdir)`, and
+   `evaluate(workdir, artifact_url)`.
+2. Keep `agent.py` as the protocol adapter and call your existing agent from
+   those hooks, either by importing a Python package or shelling out to your CLI.
+
+## Development
 
 Backend:
 
@@ -57,23 +105,15 @@ Worker:
 
 ```bash
 cd apps/server
-VIS_ARENA_S3_BUCKET=... VIS_ARENA_WORKER_API_TOKEN=... uv run --with-editable . vis-arena-worker
+uv run --with-editable . vis-arena-worker
 ```
 
-Participant journey (SDK/CLI):
+SDK:
 
 ```bash
-uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
-vis-arena init my-agent && cd my-agent
-vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
-vis-arena submit . --dataset monthly-sales
-vis-arena submissions watch <submission-id>
-vis-arena submissions preview <submission-id>
+cd packages/arena-sdk
+uv run --with-editable . vis-arena --help
 ```
-
-`submit` prints the follow-up commands. Use `vis-arena submissions watch <id>`
-to poll progress and `vis-arena submissions preview <id>` to print the generated
-visualization URL.
 
 Frontend:
 
@@ -83,10 +123,11 @@ pnpm install
 pnpm dev
 ```
 
-## LLM Access Model
+## More Docs
 
-Participants use their own provider keys for local testing, currently `OPENAI_API_KEY`.
-
-For cloud evaluation after submission, Vis Arena injects `VIS_ARENA_API_TOKEN` into the sandbox. The submitted agent can call the arena backend to request a short-lived LLM credential for an allowed provider/model. The backend enforces budget, model policy, and audit logging before returning a scoped token. Long-lived provider keys are never shipped in the submitted bundle.
-
-The Python SDK includes the token helper, and the template agent documents the expected environment variables.
+- `packages/arena-sdk/README.md`: SDK quickstart.
+- `submissions/python-template/README.md`: template agent guide.
+- `apps/evaluation-server-frontend/src/content/challenge-2026/sdk-guide.md`:
+  participant-facing CLI guide.
+- `docs/arena_protocol.md`: protocol details.
+- `docs/peer_review_arena.md`: peer-review lifecycle.

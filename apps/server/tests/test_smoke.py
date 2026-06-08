@@ -181,14 +181,14 @@ def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) 
     work_dir = tmp_path / "work"
     (reports_dir / "generation").mkdir(parents=True)
     (reports_dir / "evaluation").mkdir(parents=True)
-    work_dir.mkdir()
+    (work_dir / "evaluate").mkdir(parents=True)
 
     (reports_dir / "generation" / "runtime.log").write_text("generation log", encoding="utf-8")
     (reports_dir / "generation" / "trajectory.jsonl").write_text('{"phase":"generation"}\n', encoding="utf-8")
-    (work_dir / "agent-info.json").write_text('{"name":"agent"}', encoding="utf-8")
+    (reports_dir / "generation" / "agent-info.json").write_text('{"name":"agent"}', encoding="utf-8")
     (reports_dir / "evaluation" / "runtime.log").write_text("evaluation log", encoding="utf-8")
     (reports_dir / "evaluation" / "trajectory.jsonl").write_text('{"phase":"evaluation"}\n', encoding="utf-8")
-    (reports_dir / "evaluation" / "report.json").write_text('{"score":1}', encoding="utf-8")
+    (work_dir / "evaluate" / "evaluation.json").write_text('{"score":1}', encoding="utf-8")
 
     uploads: list[tuple[Path, str, str]] = []
     monkeypatch.setattr(evaluator, "upload_s3_file", lambda path, key, content_type: uploads.append((path, key, content_type)))
@@ -216,13 +216,18 @@ def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) 
 def test_generation_artifacts_zip_excludes_task_data(tmp_path: Path) -> None:
     from vis_arena_server.evaluator import make_generation_artifacts_zip
 
+    # The post-refactor generate workdir holds inputs (task.md, data/) alongside
+    # the agent's outputs (source/, dist/, generation.json). The artifact zip
+    # should ship only the outputs.
     work_dir = tmp_path / "work"
-    (work_dir / "task" / "data").mkdir(parents=True)
-    (work_dir / "output" / "dist").mkdir(parents=True)
-    (work_dir / "output" / "source").mkdir(parents=True)
-    (work_dir / "task" / "data" / "large.csv").write_text("not an artifact", encoding="utf-8")
-    (work_dir / "output" / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
-    (work_dir / "output" / "source" / "main.js").write_text("console.log('ok')", encoding="utf-8")
+    generate = work_dir / "generate"
+    (generate / "data").mkdir(parents=True)
+    (generate / "dist").mkdir(parents=True)
+    (generate / "source").mkdir(parents=True)
+    (generate / "task.md").write_text("# task", encoding="utf-8")
+    (generate / "data" / "large.csv").write_text("not an artifact", encoding="utf-8")
+    (generate / "dist" / "index.html").write_text("<html></html>", encoding="utf-8")
+    (generate / "source" / "main.js").write_text("console.log('ok')", encoding="utf-8")
     target_zip = tmp_path / "artifacts.zip"
 
     make_generation_artifacts_zip(work_dir, target_zip)

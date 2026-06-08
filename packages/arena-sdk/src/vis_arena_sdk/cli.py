@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import http.server
 import json
+import os
+import shutil
 import stat
+import subprocess
+import sys
 import time
+import socketserver
+import threading
+import zipfile
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from importlib import resources
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -17,10 +27,12 @@ app = typer.Typer(help="Vis Arena command line client")
 datasets_app = typer.Typer(help="Dataset commands")
 submissions_app = typer.Typer(help="Submission commands")
 results_app = typer.Typer(help="Result commands")
+local_app = typer.Typer(help="Local agent development commands")
 llm_app = typer.Typer(help="Cloud LLM token commands")
 app.add_typer(datasets_app, name="datasets")
 app.add_typer(submissions_app, name="submissions")
 app.add_typer(results_app, name="results")
+app.add_typer(local_app, name="local")
 app.add_typer(llm_app, name="llm")
 
 
@@ -169,12 +181,12 @@ def version(server_url: Optional[str] = None) -> None:
 def submit(
     path: Path,
     name: Optional[str] = typer.Option(None, "--name", "-n", help="Submission name. Defaults to the file or folder name."),
-    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Dataset to run this submission against."),
+    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Deprecated; submissions run against all active public datasets."),
     server_url: Optional[str] = None,
     token: Optional[str] = None,
 ) -> None:
     """Upload an agent submission."""
-    _upload_submission(path, name=name or path.stem, dataset_id=dataset_id, server_url=server_url, token=token)
+    _upload_submission(path, name=name or _default_submission_name(path), dataset_id=dataset_id, server_url=server_url, token=token)
 
 
 @datasets_app.command("list")
@@ -204,7 +216,8 @@ def datasets_download(dataset_id: str, output: Path, server_url: Optional[str] =
     """Download a dataset bundle."""
     client = _client(server_url, token)
     try:
-        path = client.download_dataset(dataset_id, output)
+        dataset = client.resolve_dataset(dataset_id)
+        path = client.download_dataset(dataset.id, output)
         typer.echo(str(path))
     finally:
         client.close()
@@ -216,15 +229,26 @@ def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, 
     _upload_submission(path, name=name, dataset_id=dataset_id, server_url=server_url, token=token)
 
 
+def _default_submission_name(path: Path) -> str:
+    """Pick a fallback name when --name is omitted.
+
+    `path.stem` is "" for `Path(".")`, which would create a submission literally
+    named "" on the leaderboard. Resolve first so submissions from inside a
+    bundle dir use the dir name; strip a `.zip` suffix when present.
+    """
+    resolved = path.resolve()
+    return resolved.stem if resolved.suffix == ".zip" else resolved.name
+
+
 def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     client = _client(server_url, token)
     try:
-        dataset = client.resolve_dataset(dataset_id) if dataset_id else None
         submission = client.upload_submission(
-            path, name=name, dataset_id=dataset.id if dataset else None
+            path, name=name, dataset_id=None
         )
-        target = f'"{dataset.name}"' if dataset else "all public datasets"
-        typer.echo(f"Submission {submission.id} queued against {target}.")
+        if dataset_id:
+            typer.echo("--dataset is deprecated and ignored; submissions run against all active public datasets.", err=True)
+        typer.echo(f"Submission {submission.id} queued for all active public datasets.")
         typer.echo(f"  Track progress:  vis-arena submissions watch {submission.id}")
         typer.echo(f"  Preview artifact: vis-arena submissions preview {submission.id}")
     finally:
@@ -299,7 +323,7 @@ def submissions_preview(submission_id: str, server_url: Optional[str] = None, to
         if preview_jobs:
             _print_submission_preview_urls(client, preview_jobs)
             return
-        if submission.status in {"queued", "running", "uploading"} or any(job.get("status") in {"queued", "running"} for job in jobs):
+        if submission.status in {"queued", "running", "uploading"} or any(job.get("status") in {"queued", "running", "waiting_reviewer"} for job in jobs):
             typer.echo(f"Submission {submission_id} is still {submission.status}.")
             typer.echo(f"  Track progress: vis-arena submissions watch {submission_id}")
             raise typer.Exit(2)
@@ -320,25 +344,40 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
             preview = "preview" if result.get("preview_s3_key") else ""
             run_seconds = result.get("run_seconds")
             duration = "" if run_seconds is None else f"{float(run_seconds):.1f}s"
-            typer.echo(f"{result['id']}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
+            job_type = result.get("job_type") or "generation"
+            typer.echo(f"{result['id']}\t{job_type}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
     finally:
         client.close()
 
 
 def _format_submission_status(status: str, score: float | None, jobs: list[dict], usage: dict) -> str:
-    job_statuses = {str(job.get("status") or "unknown") for job in jobs}
+    generation_jobs = [job for job in jobs if (job.get("job_type") or "generation") == "generation"]
+    review_jobs = [job for job in jobs if job.get("job_type") == "peer_review"]
     run_seconds = max((float(job["run_seconds"]) for job in jobs if job.get("run_seconds") is not None), default=None)
+    review_run_seconds = max((float(job["run_seconds"]) for job in review_jobs if job.get("run_seconds") is not None), default=None)
     total_tokens = int((usage.get("summary") or {}).get("total_tokens") or 0)
     parts = [status]
-    if job_statuses and (len(job_statuses) > 1 or status not in job_statuses):
-        parts.append("tasks=" + ",".join(sorted(job_statuses)))
+    if generation_jobs:
+        parts.append("generation=" + _summarize_job_statuses(generation_jobs))
+    if review_jobs:
+        parts.append("reviews=" + _summarize_job_statuses(review_jobs).replace("waiting_reviewer", "waiting"))
     if run_seconds is not None:
         parts.append(f"runtime={run_seconds:.1f}s")
+    if review_run_seconds is not None:
+        parts.append(f"review_runtime={review_run_seconds:.1f}s")
     if total_tokens:
         parts.append(f"tokens={total_tokens:,}")
     if score is not None:
         parts.append(f"score={score:.2f}")
     return "  ".join(parts)
+
+
+def _summarize_job_statuses(jobs: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for job in jobs:
+        status = str(job.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return ",".join(f"{status}:{counts[status]}" for status in sorted(counts))
 
 
 def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> None:
@@ -353,6 +392,84 @@ def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> 
 def _job_errors(jobs: list[dict]) -> str:
     errors = [f"{job.get('task_id') or job.get('id')}: {job.get('error')}" for job in jobs if job.get("error")]
     return "\n".join(errors)
+
+
+@local_app.command("run")
+def local_run(
+    agent_dir: Path = typer.Argument(Path("."), help="Agent bundle directory containing agent.py."),
+    dataset_id: Optional[str] = typer.Option(None, "--dataset-id", "--dataset", help="Dataset id, name, or slug to test against."),
+    task_path: Optional[Path] = typer.Option(None, "--task", "-t", help="Local task directory or dataset ZIP containing task.md and data/."),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir", "-o", help="Directory for the local run outputs."),
+    env_file: Optional[Path] = typer.Option(None, "--env-file", help="Optional .env file for local provider keys."),
+    server_url: Optional[str] = None,
+    token: Optional[str] = None,
+    force: bool = typer.Option(False, "--force", help="Replace an existing output directory."),
+) -> None:
+    """Run info, generate, and evaluate locally without uploading to the arena."""
+    agent_dir = agent_dir.resolve()
+    agent_py = agent_dir / "agent.py"
+    if not agent_py.exists():
+        raise VisArenaError(f"Missing agent entrypoint: {agent_py}")
+
+    run_dir = (output_dir.resolve() if output_dir else agent_dir / ".vis-arena" / "local-runs" / _timestamp())
+    if run_dir.exists() and any(run_dir.iterdir()):
+        if not force:
+            raise VisArenaError(f"Output directory is not empty: {run_dir}. Use --force to replace it.")
+        shutil.rmtree(run_dir)
+    generation_dir = run_dir / "generation"
+    evaluation_dir = run_dir / "evaluation"
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    evaluation_dir.mkdir(parents=True, exist_ok=True)
+
+    task_dir = _resolve_local_task(dataset_id, task_path, run_dir, server_url, token)
+    task_md = task_dir / "task.md"
+    task_data = task_dir / "data"
+    if not task_md.exists():
+        raise VisArenaError(f"Missing task file: {task_md}")
+    if not task_data.exists():
+        raise VisArenaError(f"Missing task data directory: {task_data}")
+    shutil.copy2(task_md, generation_dir / "task.md")
+    shutil.copytree(task_data, generation_dir / "data", dirs_exist_ok=True)
+    shutil.copy2(task_md, evaluation_dir / "task.md")
+
+    env = _local_env(agent_dir, env_file)
+    typer.echo(f"Local run: {run_dir}")
+    _run_agent_command(agent_dir, ["info", "--output", str(run_dir / "agent-info.json")], run_dir / "info.log", env)
+    _run_agent_command(agent_dir, ["generate", str(generation_dir)], run_dir / "generation.log", env)
+
+    dist_dir = generation_dir / "dist"
+    if not (dist_dir / "index.html").exists():
+        raise VisArenaError(f"Generation did not create {dist_dir / 'index.html'}")
+
+    eval_env = env.copy()
+    with _serve_directory(dist_dir) as artifact_url:
+        eval_env["VIS_ARENA_ARTIFACT_URL"] = artifact_url
+        _run_agent_command(agent_dir, ["evaluate", str(evaluation_dir)], run_dir / "evaluation.log", eval_env)
+
+    evaluation_json = evaluation_dir / "evaluation.json"
+    score_text = ""
+    if evaluation_json.exists():
+        payload = json.loads(evaluation_json.read_text(encoding="utf-8"))
+        score_text = f"  score: {payload.get('score')} / {payload.get('max_score')}"
+    typer.echo("Local run succeeded.")
+    if score_text:
+        typer.echo(score_text)
+    typer.echo(f"  artifact: {dist_dir / 'index.html'}")
+    typer.echo(f"  logs: {run_dir}")
+    typer.echo(f"  preview: vis-arena local preview {run_dir}")
+
+
+@local_app.command("preview")
+def local_preview(
+    run_dir: Path = typer.Argument(..., help="Local run directory created by `vis-arena local run`."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Host to bind."),
+    port: int = typer.Option(8080, "--port", min=1, max=65535, help="Port to bind."),
+) -> None:
+    """Serve a local run's generated artifact for browser preview."""
+    dist_dir = run_dir.resolve() / "generation" / "dist"
+    if not (dist_dir / "index.html").exists():
+        raise VisArenaError(f"Missing preview artifact: {dist_dir / 'index.html'}")
+    _serve_directory_forever(dist_dir, host, port)
 
 
 @results_app.command("preview")
@@ -374,6 +491,159 @@ def llm_token(provider: str, model: str, purpose: str = "generation", server_url
         typer.echo(llm.model_dump_json(indent=2))
     finally:
         client.close()
+
+
+def _timestamp() -> str:
+    return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+
+
+def _local_env(agent_dir: Path, env_file: Path | None) -> dict[str, str]:
+    env = os.environ.copy()
+    candidates = [env_file.resolve()] if env_file else [Path.cwd() / ".env", Path.cwd() / ".env.local", agent_dir / ".env", agent_dir / ".env.local"]
+    seen: set[Path] = set()
+    for path in candidates:
+        if path in seen or not path.exists():
+            continue
+        seen.add(path)
+        for line in path.read_text(encoding="utf-8").splitlines():
+            parsed = _parse_env_line(line)
+            if parsed is None:
+                continue
+            key, value = parsed
+            env.setdefault(key, value)
+    return env
+
+
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[len("export "):].strip()
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    value = value.strip()
+    if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+        value = value[1:-1]
+    return key, value
+
+
+def _resolve_local_task(
+    dataset_id: str | None,
+    task_path: Path | None,
+    run_dir: Path,
+    server_url: str | None,
+    token: str | None,
+) -> Path:
+    if dataset_id and task_path:
+        raise VisArenaError("Pass either --dataset or --task, not both.")
+    if dataset_id:
+        client = _client(server_url, token)
+        try:
+            dataset = client.resolve_dataset(dataset_id)
+            bundle_path = client.download_dataset(dataset.id, run_dir / "dataset.zip")
+        finally:
+            client.close()
+        return _prepare_local_task(bundle_path, run_dir / "input")
+    if task_path:
+        return _prepare_local_task(task_path.resolve(), run_dir / "input")
+    raise VisArenaError("Pass --dataset monthly-sales, or use --task for a local task folder/ZIP.")
+
+
+def _prepare_local_task(task_path: Path, extract_dir: Path) -> Path:
+    if task_path.is_dir():
+        return task_path
+    if not task_path.exists():
+        raise VisArenaError(f"Task path does not exist: {task_path}")
+    if task_path.suffix.lower() != ".zip":
+        raise VisArenaError(f"Task path must be a directory or .zip file: {task_path}")
+
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(task_path) as archive:
+        _safe_extract_zip(archive, extract_dir)
+    task_files = sorted(path for path in extract_dir.rglob("task.md") if "__MACOSX" not in path.parts)
+    if not task_files:
+        raise VisArenaError(f"Dataset ZIP does not contain task.md: {task_path}")
+    if len(task_files) > 1:
+        options = "\n".join(str(path.parent.relative_to(extract_dir)) for path in task_files)
+        raise VisArenaError(f"Dataset ZIP contains multiple tasks. Extract it and pass one task directory:\n{options}")
+    return task_files[0].parent
+
+
+def _safe_extract_zip(archive: zipfile.ZipFile, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    for info in archive.infolist():
+        member_path = target_root / info.filename
+        resolved = member_path.resolve()
+        if target_root != resolved and target_root not in resolved.parents:
+            raise VisArenaError(f"Unsafe ZIP path: {info.filename}")
+        if info.is_dir():
+            resolved.mkdir(parents=True, exist_ok=True)
+        else:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(info) as src, resolved.open("wb") as dst:
+                shutil.copyfileobj(src, dst)
+
+
+def _run_agent_command(agent_dir: Path, args: list[str], log_path: Path, env: dict[str, str]) -> None:
+    command = _agent_command(agent_dir, args)
+    started = time.monotonic()
+    with log_path.open("w", encoding="utf-8") as log:
+        log.write("$ " + " ".join(command) + "\n\n")
+        log.flush()
+        proc = subprocess.run(command, cwd=agent_dir, env=env, stdout=log, stderr=subprocess.STDOUT, text=True, check=False)
+    elapsed = time.monotonic() - started
+    if proc.returncode != 0:
+        raise VisArenaError(f"Agent command failed after {elapsed:.1f}s: {' '.join(command)}. See {log_path}")
+    typer.echo(f"  {args[0]} ok ({elapsed:.1f}s)")
+
+
+def _agent_command(agent_dir: Path, args: list[str]) -> list[str]:
+    if (agent_dir / "pyproject.toml").exists() and shutil.which("uv"):
+        return ["uv", "run", "./agent.py", *args]
+    return [sys.executable, str(agent_dir / "agent.py"), *args]
+
+
+@contextmanager
+def _serve_directory(directory: Path):
+    server = _make_http_server(directory, "127.0.0.1", 0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        yield f"http://{host}:{port}/index.html"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def _serve_directory_forever(directory: Path, host: str, port: int) -> None:
+    server = _make_http_server(directory, host, port)
+    actual_host, actual_port = server.server_address
+    typer.echo(f"Serving {directory}")
+    typer.echo(f"http://{actual_host}:{actual_port}/index.html")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        typer.echo("Stopped.")
+    finally:
+        server.server_close()
+
+
+def _make_http_server(directory: Path, host: str, port: int):
+    class _QuietHandler(http.server.SimpleHTTPRequestHandler):
+        def log_message(self, format: str, *args) -> None:  # noqa: A002
+            pass
+
+    handler = lambda *a, **kw: _QuietHandler(*a, directory=str(directory), **kw)  # noqa: E731
+
+    class _ReusableTCPServer(socketserver.ThreadingTCPServer):
+        allow_reuse_address = True
+        daemon_threads = True
+
+    return _ReusableTCPServer((host, port), handler)
 
 
 def main() -> None:

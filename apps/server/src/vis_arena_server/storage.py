@@ -6,6 +6,7 @@ import shutil
 import tempfile
 import uuid
 import zipfile
+from datetime import UTC, datetime, time
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from fastapi import HTTPException
 
 from .db import connect, now_iso
 from .settings import settings
+
+SUBMISSION_UPLOAD_DAILY_LIMIT = 3
 
 
 def s3_client():
@@ -135,6 +138,13 @@ def create_submission_upload(owner_id: str, name: str) -> dict[str, Any]:
     key = f"submissions/{submission_id}/submission.zip"
     created_at = now_iso()
     with connect() as db:
+        midnight = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC).isoformat()
+        uploads_today = db.execute(
+            "select count(*) as count from submissions where owner_id = ? and created_at >= ?",
+            (owner_id, midnight),
+        ).fetchone()["count"]
+        if uploads_today >= SUBMISSION_UPLOAD_DAILY_LIMIT:
+            raise HTTPException(status_code=429, detail="Submission upload limit reached for today")
         db.execute(
             "insert into submissions (id, owner_id, name, status, score, s3_key, created_at) values (?, ?, ?, ?, ?, ?, ?)",
             (submission_id, owner_id, name, "uploading", None, key, created_at),
@@ -148,12 +158,13 @@ def create_submission_upload(owner_id: str, name: str) -> dict[str, Any]:
 def finalize_submission(submission_id: str, owner_id: str, dataset_id: str | None = None) -> dict[str, Any]:
     with connect() as db:
         row = db.execute("select * from submissions where id = ? and owner_id = ?", (submission_id, owner_id)).fetchone()
-        dataset_rows = db.execute(
-            "select id from datasets where (? is null or id = ?) and (owner_id = ? or visibility = 'public') and task_count > 0",
-            (dataset_id, dataset_id, owner_id),
-        ).fetchall()
+        dataset_rows = db.execute("select id from datasets where visibility = 'public' and task_count > 0").fetchall()
     if row is None:
         raise HTTPException(status_code=404, detail="Submission not found")
+    if row["status"] != "uploading":
+        raise HTTPException(status_code=409, detail="Submission has already been finalized")
+    if not dataset_rows:
+        raise HTTPException(status_code=400, detail="No active public datasets are available")
     with tempfile.TemporaryDirectory() as tmp:
         bundle = Path(tmp) / "submission.zip"
         extract = Path(tmp) / "extracted"
@@ -163,13 +174,22 @@ def finalize_submission(submission_id: str, owner_id: str, dataset_id: str | Non
             raise HTTPException(status_code=400, detail="Submission must contain agent or agent.py")
     now = now_iso()
     with connect() as db:
-        db.execute("update submissions set status = ? where id = ?", ("queued", submission_id))
+        db.execute(
+            "update submissions set status = ?, score = ?, finalized_at = ?, reviewer_eligible_at = null where id = ?",
+            ("queued", None, now, submission_id),
+        )
         for dataset in dataset_rows:
             tasks = db.execute("select id from tasks where dataset_id = ?", (dataset["id"],)).fetchall()
             for task in tasks:
                 db.execute(
-                    "insert into jobs (id, submission_id, dataset_id, task_id, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)",
-                    (str(uuid.uuid4()), submission_id, dataset["id"], task["id"], "queued", now, now),
+                    """
+                    insert into jobs (
+                      id, submission_id, job_type, generator_submission_id,
+                      dataset_id, task_id, status, created_at, updated_at
+                    )
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), submission_id, "generation", submission_id, dataset["id"], task["id"], "queued", now, now),
                 )
     return {"id": submission_id, "name": row["name"], "status": "queued", "score": None, "created_at": row["created_at"]}
 
