@@ -15,6 +15,7 @@ submissions/python-template/  Reference participant agent bundle
 examples/tasks/               Example dataset/task bundles
 schemas/                      JSON schemas
 docs/                         Protocol and project docs
+docs/peer_review_arena.md     Peer-review queue lifecycle
 ```
 
 ## Participant Flow
@@ -30,12 +31,13 @@ OPENAI_API_KEY=sk-...
 EOF
 
 vis-arena local run . --dataset monthly-sales
-vis-arena submit . --name "my-agent-v1" --dataset ieee-vis-publications
+vis-arena submit . --name "my-agent-v1"
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
 
 `--name` is the submission name shown in participant views and the leaderboard.
+Cloud submissions run against every active public dataset.
 Local runs use the participant's own `OPENAI_API_KEY`. Cloud submissions use
 arena-provided LLM access; do not package API keys in a submission.
 
@@ -128,3 +130,4 @@ pnpm dev
 - `apps/evaluation-server-frontend/src/content/challenge-2026/sdk-guide.md`:
   participant-facing CLI guide.
 - `docs/arena_protocol.md`: protocol details.
+- `docs/peer_review_arena.md`: peer-review lifecycle.

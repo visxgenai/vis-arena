@@ -75,12 +75,13 @@ Run `./agent.py models` inside a cloud job to print the live list.
 From your scaffolded directory (post-`vis-arena init`):
 
 ```bash
-vis-arena submit . --name "my-agent-v1" --dataset ieee-vis-publications
+vis-arena submit . --name "my-agent-v1"
 ```
 
 `--name` is what shows on the leaderboard. Without it, the CLI uses the
 directory you submit from — fine for `vis-arena init my-agent && cd my-agent`,
 but if you submit from inside a generic `agent/` folder, give it a real name.
+Cloud submission runs against every active public dataset on the arena server.
 
 ## Optional: test locally
 
