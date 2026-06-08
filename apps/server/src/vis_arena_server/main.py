@@ -301,6 +301,30 @@ def leaderboard(request: Request) -> dict:
             limit 100
             """
         ).fetchall()
+        submission_ids = [row["id"] for row in rows]
+        jobs_by_submission: dict[str, list[dict]] = {submission_id: [] for submission_id in submission_ids}
+        if submission_ids:
+            placeholders = ",".join("?" for _ in submission_ids)
+            job_rows = db.execute(
+                f"""
+                select id, submission_id, dataset_id, task_id, status, result_json,
+                       preview_s3_key, completed_at, run_seconds
+                from jobs
+                where submission_id in ({placeholders})
+                order by task_id, completed_at desc
+                """,
+                submission_ids,
+            ).fetchall()
+            for job_row in job_rows:
+                job = dict(job_row)
+                preview_job_id = job["id"] if job.get("preview_s3_key") else None
+                job["result"] = decode_json(job.pop("result_json"), None)
+                job["preview_url"] = (
+                    str(request.url_for("redirect_job_preview", job_id=preview_job_id))
+                    if preview_job_id
+                    else None
+                )
+                jobs_by_submission.setdefault(job["submission_id"], []).append(job)
     items = []
     for row in rows:
         entry = dict(row)
@@ -310,6 +334,7 @@ def leaderboard(request: Request) -> dict:
             if preview_job_id
             else None
         )
+        entry["jobs"] = jobs_by_submission.get(entry["id"], [])
         items.append(entry)
     return {"items": items}
 
