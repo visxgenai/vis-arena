@@ -5,8 +5,7 @@
 This is a monorepo for the Vis Arena platform.
 
 - `apps/server/`: FastAPI backend for auth, S3 presigned storage, Docker evaluation jobs, leaderboard, artifacts, and cloud LLM token brokerage.
-- `apps/web/`: React + TypeScript + Tailwind frontend for account flows, uploads, previews, and leaderboard views.
-- `apps/web/docs/`: Markdown help documents rendered in the web UI with `react-markdown`, including SDK and template-agent guidance.
+- `apps/evaluation-server-frontend/`: Active participant-facing frontend. This is a separate git repo/submodule; commit and push frontend changes inside that repo, then update the parent submodule pointer only when needed.
 - `packages/arena-sdk/`: Python SDK and `vis-arena` CLI for arena access.
 - `submissions/python-template/`: Reference OpenAI participant agent bundle with `info`, `generate`, and `evaluate` commands.
 - `docs/`: Protocol and contributor-facing design documentation.
@@ -25,12 +24,12 @@ cd submissions/python-template && uv run --with-editable ../../packages/arena-sd
 cd apps/server && uv run --with-editable . vis-arena-worker
 ```
 
-Use `pnpm` for the frontend:
+Use `pnpm` for the active frontend:
 
 ```bash
-cd apps/web && pnpm install
-cd apps/web && pnpm dev
-cd apps/web && pnpm build
+cd apps/evaluation-server-frontend && pnpm install
+cd apps/evaluation-server-frontend && pnpm dev
+cd apps/evaluation-server-frontend && pnpm build
 ```
 
 Run a broad Python syntax check from the repo root:
@@ -45,7 +44,7 @@ Python targets 3.11+. Prefer typed Pydantic models for API payloads and `pathlib
 
 Frontend code is TypeScript with React function components and Tailwind utility classes. Use PascalCase for components, camelCase for variables/functions, and keep reusable UI structure in small typed components.
 
-Keep user-facing arena instructions in `apps/web/docs/*.md`. When SDK commands, template-agent links, dataset format, submission commands, evaluation behavior, or authentication changes, update those Markdown docs in the same change.
+Keep user-facing arena instructions in `apps/evaluation-server-frontend`. When SDK commands, template-agent links, dataset format, submission commands, evaluation behavior, or authentication changes, update the active frontend copy in the same change.
 
 ## Testing Guidelines
 
@@ -61,4 +60,4 @@ Pull requests should include a short summary, verification commands run, screens
 
 ## Security & Configuration Tips
 
-Never commit provider API keys, arena tokens, `.env` files, virtual environments, build outputs, or dependency folders. Local runs use participant-owned `OPENAI_API_KEY`. Cloud evaluation should inject `VIS_ARENA_API_TOKEN` and retrieve backend-issued provider credentials. S3 bucket credentials belong in deployment secrets only.
+Never commit provider API keys, arena tokens, `.env` files, virtual environments, build outputs, or dependency folders. Keep non-secret defaults in `.env.example` files when configuration changes. Local runs use participant-owned `OPENAI_API_KEY`. Cloud evaluation should inject `VIS_ARENA_API_TOKEN` and retrieve backend-issued provider credentials. S3 bucket credentials belong in deployment secrets only.

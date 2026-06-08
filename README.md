@@ -8,13 +8,14 @@ This repository contains:
 - A compact Python/OpenAI template submission agent with `generate` and `evaluate` commands.
 - A Python SDK and CLI for authentication, datasets, tasks, and submissions.
 - A FastAPI backend skeleton for accounts, S3 presigned uploads, Docker evaluation jobs, and cloud-only LLM token brokerage.
-- A React arena frontend for browsing datasets, submissions, leaderboard entries, and visual previews.
+- A participant-facing evaluation frontend maintained in `apps/evaluation-server-frontend`.
 
 ## Repository Layout
 
 ```text
 apps/server/                 FastAPI backend
-apps/web/                    React frontend
+apps/evaluation-server-frontend/
+                             Active frontend submodule
 docs/arena_protocol.md       Task, generation, and evaluation interfaces
 examples/tasks/              Example benchmark task
 packages/arena-sdk/          Python SDK and CLI
@@ -29,13 +30,13 @@ Every submission bundle must expose an executable with these commands:
 ```bash
 ./agent.py info --output agent-info.json
 ./agent.py generate --task task.md --data-dir data --output-dir run/generated
-./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --built-dir run/generated/built --output run/evaluation.json
+./agent.py evaluate --task task.md --data-dir data --source-dir run/generated/source --dist-dir run/generated/dist --output run/evaluation.json
 ```
 
 `generate` writes:
 
 - `source/`: editable web source code.
-- `built/`: static browser-ready artifact, usually `index.html`, CSS, and JS.
+- `dist/`: static browser-ready artifact, usually `index.html`, CSS, and JS.
 - `generation.json`: metadata about the run.
 
 `evaluate` writes a JSON evaluation report with a score, rubric breakdown, browser observations, source observations, and reproducibility metadata.
@@ -48,6 +49,7 @@ Backend:
 
 ```bash
 cd apps/server
+cp .env.example .env
 uv run --with-editable . vis-arena-server
 ```
 
@@ -58,25 +60,25 @@ cd apps/server
 VIS_ARENA_S3_BUCKET=... VIS_ARENA_WORKER_API_TOKEN=... uv run --with-editable . vis-arena-worker
 ```
 
-SDK/CLI:
+Participant journey (SDK/CLI):
 
 ```bash
-cd packages/arena-sdk
-uv run --with-editable . vis-arena --help
+uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
+vis-arena init my-agent && cd my-agent
+vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
+vis-arena submit . --dataset monthly-sales
+vis-arena submissions watch <submission-id>
+vis-arena submissions preview <submission-id>
 ```
 
-Template submission:
-
-```bash
-cd submissions/python-template
-OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py generate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --output-dir /tmp/vis-run
-OPENAI_API_KEY=... uv run --with-editable ../../packages/arena-sdk --with-editable . ./agent.py evaluate --task ../../examples/tasks/monthly-sales/task.md --data-dir ../../examples/tasks/monthly-sales/data --source-dir /tmp/vis-run/source --built-dir /tmp/vis-run/built --output /tmp/vis-run/evaluation.json
-```
+`submit` prints the follow-up commands. Use `vis-arena submissions watch <id>`
+to poll progress and `vis-arena submissions preview <id>` to print the generated
+visualization URL.
 
 Frontend:
 
 ```bash
-cd apps/web
+cd apps/evaluation-server-frontend
 pnpm install
 pnpm dev
 ```

@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 
 
 class RegisterRequest(BaseModel):
@@ -66,3 +66,20 @@ class LLMTokenResponse(BaseModel):
     expires_at: datetime
     base_url: str | None = None
 
+
+class LLMMessageRequest(BaseModel):
+    job_id: str
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    tool_choice: str | dict[str, Any] | None = "auto"
+    model: str | None = None
+    purpose: str = "generation"
+    max_tokens: int = 4096
+
+
+class LLMMessageResponse(BaseModel):
+    provider: str
+    model: str
+    message: dict[str, Any]
+    usage: dict[str, int]
+    remaining_submission_tokens: int

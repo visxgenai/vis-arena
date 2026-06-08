@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import shutil
 import tempfile
 import uuid
@@ -8,7 +9,10 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+import boto3
 import yaml
+from botocore.client import Config
+from botocore.exceptions import ClientError
 from fastapi import HTTPException
 
 from .db import connect, now_iso
@@ -25,13 +29,11 @@ from .settings import settings
 
 
 def s3_client():
-    import boto3
-    from botocore.client import Config
-
+    endpoint_url = settings.s3_endpoint_url or f"https://s3.{settings.s3_region}.amazonaws.com"
     return boto3.client(
         "s3",
         region_name=settings.s3_region,
-        endpoint_url=settings.s3_endpoint_url,
+        endpoint_url=endpoint_url,
         config=Config(signature_version="s3v4"),
     )
 
@@ -72,7 +74,13 @@ def download_s3(key: str, target: Path) -> None:
         local_download(key, target)
         return
     target.parent.mkdir(parents=True, exist_ok=True)
-    s3_client().download_file(settings.s3_bucket, key, str(target))
+    try:
+        s3_client().download_file(settings.s3_bucket, key, str(target))
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=400, detail=f"S3 object not found: {key}") from exc
+        raise
 
 
 def upload_s3_file(path: Path, key: str, content_type: str = "application/octet-stream") -> None:
@@ -80,6 +88,31 @@ def upload_s3_file(path: Path, key: str, content_type: str = "application/octet-
         local_upload_file(path, key)
         return
     s3_client().upload_file(str(path), settings.s3_bucket, key, ExtraArgs={"ContentType": content_type})
+
+
+def read_s3_file(key: str) -> tuple[bytes, str]:
+    if local_storage_enabled():
+        path = local_file_path(key)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"Local file not found: {key}")
+        ct = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return path.read_bytes(), ct
+    try:
+        response = s3_client().get_object(Bucket=settings.s3_bucket, Key=key)
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise HTTPException(status_code=404, detail=f"S3 object not found: {key}") from exc
+        raise
+    return response["Body"].read(), response.get("ContentType") or "application/octet-stream"
+
+
+def upload_s3_directory(source_dir: Path, prefix: str) -> None:
+    for path in source_dir.rglob("*"):
+        if path.is_file():
+            relative_key = path.relative_to(source_dir).as_posix()
+            content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+            upload_s3_file(path, f"{prefix.rstrip('/')}/{relative_key}", content_type)
 
 
 def create_dataset_upload(owner_id: str, name: str, visibility: str) -> dict[str, Any]:

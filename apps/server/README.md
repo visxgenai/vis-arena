@@ -4,9 +4,13 @@ FastAPI backend for Vis Arena accounts, S3 artifact storage, submission queues,
 Docker evaluation, and cloud-only OpenAI token brokerage.
 
 ```bash
+cp .env.example .env
 uv run --with-editable . vis-arena-server
 uv run --with-editable . vis-arena-worker
 ```
+
+The server loads `.env` and `.env.local` from `apps/server/` or the current
+working directory. Real environment variables take precedence over file values.
 
 Required storage settings:
 

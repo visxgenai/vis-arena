@@ -1,0 +1,4 @@
+[submodule "apps/evaluation-server-frontend"]
+	path = apps/evaluation-server-frontend
+	url = git@github.com:visxgenai/evaluation-server-frontend.git
+	branch = amplify

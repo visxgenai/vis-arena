@@ -13,9 +13,21 @@ dependencies = [
   "typer>=0.12.0"
 ]
 
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+]
+
 [project.scripts]
-vis-arena = "vis_arena_sdk.cli:app"
+vis-arena = "vis_arena_sdk.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+vis_arena_sdk = ["templates/python/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
 
