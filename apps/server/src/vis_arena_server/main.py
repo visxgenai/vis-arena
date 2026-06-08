@@ -413,7 +413,13 @@ def _preview_asset_url(url: str, job_id: str, token: str) -> str:
         return url
     path, fragment = url.split("#", 1) if "#" in url else (url, "")
     path = path.split("?", 1)[0]
-    rewritten = f"/v1/jobs/{job_id}/preview/{quote(_safe_preview_asset_path(path))}?token={quote(token)}"
+    # Use a path relative to the current document so the same HTML works when
+    # served directly from the backend (`/v1/jobs/<id>/preview/index.html`)
+    # AND when served through a Next.js-style proxy at
+    # `/api/arena/v1/jobs/<id>/preview/index.html`. Absolute paths break the
+    # latter case because they bypass the proxy mount point.
+    safe = _safe_preview_asset_path(path)
+    rewritten = f"{quote(safe)}?token={quote(token)}"
     return f"{rewritten}#{fragment}" if fragment else rewritten
 
 
