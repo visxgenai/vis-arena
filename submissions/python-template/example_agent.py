@@ -1,43 +1,20 @@
-"""Example Vis Arena participant agent (OpenAI tool-loop).
+"""Example participant agent (OpenAI tool-loop).
 
-This is an EXAMPLE implementation. Replace it with your own agent — keep these
-function names and signatures and `agent.py` will keep working:
+Replace with your own agent — keep these function names and signatures and
+`agent.py` keeps working. See agent.md for the full contract.
 
     info()                              -> dict
     models()                            -> dict   # optional
     generate(workdir)                   -> dict   # writes source/, dist/index.html
     evaluate(workdir, artifact_url)     -> dict   # score + criteria
 
-Three integration patterns if you already have an agent:
+Three integration patterns:
+  - Import an existing Python package and call it inside the hooks.
+  - Shell out via subprocess.run to your own CLI.
+  - Replace the tool-loop below inline.
 
-  (1) Import your existing Python package
-      from my_agent import build as my_build
-      def generate(workdir):
-          my_build(task=workdir / "task.md", data=workdir / "data",
-                   out=workdir / "dist")
-          return {"notes": "wrapped my_agent.build"}
-
-  (2) Shell out to your CLI
-      def generate(workdir):
-          subprocess.run([sys.executable, "-m", "my_agent",
-                          "--task", str(workdir / "task.md"),
-                          "--data", str(workdir / "data"),
-                          "--out", str(workdir / "dist")], check=True)
-          return {"notes": "wrapped my_agent CLI"}
-
-  (3) Inline implementation — replace the OpenAI tool-loop below with your own.
-
-Environment variables you may care about:
-
-  Local laptop testing:
-    OPENAI_API_KEY            you set this; the only var local testing needs.
-
-  Cloud evaluation (injected automatically by the arena worker — never set these yourself):
-    VIS_ARENA_API_TOKEN       short-lived token to call the arena backend.
-    VIS_ARENA_SERVER_URL      arena backend URL.
-    VIS_ARENA_JOB_ID          current job id.
-    VIS_ARENA_LLM_MODEL       chosen model id.
-    VIS_ARENA_LLM_MODELS      comma-separated list of available cloud models.
+Env vars:  OPENAI_API_KEY (local; you set)
+           VIS_ARENA_* (cloud; worker-injected, never set yourself)
 """
 from __future__ import annotations
 
@@ -52,9 +29,10 @@ from typing import Any
 from openai import OpenAI
 
 
-# Local fallback when no cloud override is present. Cloud jobs replace this via
-# VIS_ARENA_LLM_MODEL. Change this string to use a different model locally.
-LOCAL_DEFAULT_MODEL = "gpt-4.1-mini"
+# Local fallback. Cloud jobs override via VIS_ARENA_LLM_MODEL (worker-injected).
+# Run `./agent.py models` in a job to print the live list; see README.md for the
+# current cloud roster.
+LOCAL_DEFAULT_MODEL = "gpt-5.5"
 
 DEFAULT_MODEL = (
     os.environ.get("VIS_ARENA_LLM_MODEL")
@@ -77,27 +55,55 @@ Use the bash tool to inspect data and write files. When done, call finish
 with a concise JSON summary."""
 
 
-EVALUATION_PROMPT = """You are an impartial web visualization evaluator.
+EVALUATION_PROMPT = """You are an impartial storytelling-visualization evaluator.
 
-You are given exactly two things:
-  WORKDIR/task.md      read this first with the bash tool to know what was asked
-  ARTIFACT_URL         opens the artifact in the browser; use the URL verbatim
-                       (do not reconstruct it; do not hardcode localhost:8080)
+Inputs:
+  WORKDIR/task.md    read with bash to know what was asked
+  ARTIFACT_URL       opens the artifact; use verbatim (do not hardcode localhost)
 
-The artifact is your only direct evidence of the work. Open ARTIFACT_URL with
-the playwright tool (page.goto(ARTIFACT_URL)) and interact with the live
-page — click, hover, resize the viewport, inspect the DOM, check the console,
-capture screenshots. This is the same procedure whether you are judging your
-own artifact, a peer's, or the central judger's slot.
+Open ARTIFACT_URL with playwright (page.goto), then click, hover, resize,
+inspect DOM, check console, screenshot. Same procedure for self / peer /
+central-judge evaluation.
 
-Score on a 100-point scale: max_score MUST be 100, and the per-criterion
-`score` values should sum to the overall `score`. Pick criteria sensibly for
-the task (typical: task_fit, data_accuracy, interactivity, design_clarity,
-responsiveness_robustness). Allocate per-criterion `max_score` weights so they
-sum to 100.
+Score on 100 points across five criteria. Each rated 1-5 on the anchors
+below; score = anchor x 4; five criteria x max_score 20 = 100. Required ids:
 
-When done, call finish with JSON containing score, max_score, summary,
-criteria, browser, artifacts, and metadata."""
+1. data_fidelity - do displayed values, totals, and trends match WORKDIR/data?
+   Read the data with bash, then reconcile against DOM text / screenshot values.
+     1 fabricated or contradicts data · 2 major mismatch in key values ·
+     3 mostly faithful, minor discrepancies · 4 faithful, all spot-checks pass ·
+     5 fully faithful incl. aggregations, units, and edge cases.
+
+2. insightfulness - does the artifact go beyond plotting to identify trends,
+   exceptions, and implications?
+     1 raw chart · 2 basic observation · 3 headline pattern called out ·
+     4 trends + exceptions + comparison · 5 rich, actionable, decision-pointing.
+
+3. narrative_coherence - story arc (hook -> build -> payoff) AND internal
+   consistency across panels (no contradictions; encodings hold)?
+     1 contradictory or no story · 2 disconnected panels, no setup or takeaway ·
+     3 mostly coherent, implicit takeaway · 4 clear sections, consistent
+     encodings, reasoned transitions · 5 tight arc; every panel reinforces a
+     distinct hook and decisive payoff.
+
+4. visual_craft - chart type + encodings + axes + labels/captions + legibility,
+   including disclosure of filters / time frames / aggregations / scope?
+     1 misrepresents or illegible · 2 suboptimal type or major label gaps ·
+     3 readable, basic labels cover main filters · 4 well-matched type +
+     encodings + captions name assumptions · 5 optimal, accessible color,
+     comprehensive disclosure (filters + time + scope + exclusions).
+
+5. functionality - do interactive controls (filters, tooltips, selection,
+   resize) work? SCORE ONLY FROM INTERACTIONS YOU ACTUALLY PERFORMED, not
+   from reading source code.
+     1 broken / console errors · 2 some controls dead · 3 core interactions
+     work · 4 all controls work as implied · 5 all work and meaningfully aid
+     analysis.
+
+Attach short evidence strings (DOM, screenshot, console, interaction) per
+criterion. Finish with JSON: score, max_score = 100, summary, criteria (5
+items with the ids above, each with score, max_score, anchor, evidence),
+browser, artifacts, metadata."""
 
 
 # ---------------------------------------------------------------------------
