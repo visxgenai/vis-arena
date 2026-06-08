@@ -90,6 +90,12 @@ page — click, hover, resize the viewport, inspect the DOM, check the console,
 capture screenshots. This is the same procedure whether you are judging your
 own artifact, a peer's, or the central judger's slot.
 
+Score on a 100-point scale: max_score MUST be 100, and the per-criterion
+`score` values should sum to the overall `score`. Pick criteria sensibly for
+the task (typical: task_fit, data_accuracy, interactivity, design_clarity,
+responsiveness_robustness). Allocate per-criterion `max_score` weights so they
+sum to 100.
+
 When done, call finish with JSON containing score, max_score, summary,
 criteria, browser, artifacts, and metadata."""
 
