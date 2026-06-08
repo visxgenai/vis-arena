@@ -54,14 +54,25 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         root = Path(tmp)
         submission_zip = root / "submission.zip"
         submission_dir = root / "submission"
-        work_dir = root / "work"
+        work_dir = root / "work"            # holds generate/ and evaluate/ workdirs
+        staging_dir = root / "staging"      # extracted task (task.md + data/)
         reports_dir = root / "reports"
         artifacts_zip = root / "artifacts.zip"
 
         download_s3(job["submission_s3_key"], submission_zip)
         safe_extract_zip(submission_zip, submission_dir)
         copy_sdk(root / "sdk")
-        copy_task_data(job["dataset_s3_key"], job["task_id"], work_dir)
+
+        # Extract the task once, then stage task.md + data/ into both workdirs.
+        # Each phase gets a fresh workdir; the evaluate workdir does NOT get source/.
+        task_root = copy_task_data(job["dataset_s3_key"], job["task_id"], staging_dir)
+        for phase in ("generate", "evaluate"):
+            phase_workdir = work_dir / phase
+            phase_workdir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(task_root / "task.md", phase_workdir / "task.md")
+            if (task_root / "data").exists():
+                shutil.copytree(task_root / "data", phase_workdir / "data", dirs_exist_ok=True)
+
         reports_dir.mkdir(parents=True, exist_ok=True)
 
         script = render_container_script()
@@ -73,13 +84,13 @@ def run_job(job: dict[str, Any]) -> dict[str, Any]:
         if runtime["returncode"] != 0:
             raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
-        evaluation = json.loads((reports_dir / "evaluation" / "report.json").read_text(encoding="utf-8"))
+        evaluation = json.loads((work_dir / "evaluate" / "evaluation.json").read_text(encoding="utf-8"))
         make_generation_artifacts_zip(work_dir, artifacts_zip)
         artifact_prefix = f"jobs/{job['id']}/generation/artifacts"
         preview_prefix = f"jobs/{job['id']}/generation/preview"
         preview_s3_key = None
         upload_s3_file(artifacts_zip, f"{artifact_prefix}.zip", "application/zip")
-        preview_dist = work_dir / "output" / "dist"
+        preview_dist = work_dir / "generate" / "dist"
         if (preview_dist / "index.html").exists():
             upload_s3_directory(preview_dist, preview_prefix)
             preview_s3_key = f"{preview_prefix}/index.html"
@@ -103,10 +114,28 @@ def copy_sdk(target: Path) -> None:
 
 
 def make_generation_artifacts_zip(work_dir: Path, target_zip: Path) -> None:
-    output_dir = work_dir / "output"
-    if not output_dir.exists():
-        raise RuntimeError("Agent did not create an output directory")
-    make_zip(output_dir, target_zip)
+    """Zip the generation outputs: source/, dist/, generation.json.
+
+    Excludes task.md and data/, which are inputs staged by the worker rather
+    than agent-produced artifacts.
+    """
+    generate_dir = work_dir / "generate"
+    if not generate_dir.exists():
+        raise RuntimeError("Agent did not create a generate workdir")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        staging = Path(tmp) / "output"
+        staging.mkdir()
+        for relative in ("source", "dist", "generation.json"):
+            src = generate_dir / relative
+            if not src.exists():
+                continue
+            dst = staging / relative
+            if src.is_dir():
+                shutil.copytree(src, dst)
+            else:
+                shutil.copy2(src, dst)
+        make_zip(staging, target_zip)
 
 
 def render_container_script() -> str:
@@ -187,7 +216,7 @@ run_phase() {
   echo "[$(date -Iseconds)] step_end ${phase}.${step} exit_code=${code}" >> "$log"
   trace_event "$trace" step_end "$phase" "$step"
   if [ "$phase" = "generation" ] && [ "$step" = "generate" ]; then
-    trace_manifest "$trace" generation /arena/work/output
+    trace_manifest "$trace" generation /arena/work/generate
   fi
   return "$code"
 }
@@ -199,19 +228,29 @@ finish_phase() {
   echo "[$(date -Iseconds)] phase_end ${phase}" >> "$log"
   trace_event "$trace" phase_end "$phase"
 }
+stage_dist_for_evaluate() {
+  # After generate completes, mirror dist/ into the evaluate workdir so the
+  # agent.py contract can serve it locally during evaluate.
+  if [ -d /arena/work/generate/dist ]; then
+    rm -rf /arena/work/evaluate/dist
+    cp -r /arena/work/generate/dist /arena/work/evaluate/dist
+  fi
+}
 cd /arena/submission
 if [ -f pyproject.toml ]; then
   python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
-  run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/work/agent-info.json
-  run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
+  run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate /arena/work/generate
   finish_phase generation
-  run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+  stage_dist_for_evaluate
+  run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate /arena/work/evaluate
   finish_phase evaluation
 else
-  run_phase generation info ./agent info --output /arena/work/agent-info.json
-  run_phase generation generate ./agent generate --task /arena/work/task/task.md --data-dir /arena/work/task/data --output-dir /arena/work/output
+  run_phase generation info ./agent info --output /arena/reports/generation/agent-info.json
+  run_phase generation generate ./agent generate /arena/work/generate
   finish_phase generation
-  run_phase evaluation evaluate ./agent evaluate --task /arena/work/task/task.md --data-dir /arena/work/task/data --source-dir /arena/work/output/source --dist-dir /arena/work/output/dist --output /arena/reports/evaluation/report.json
+  stage_dist_for_evaluate
+  run_phase evaluation evaluate ./agent evaluate /arena/work/evaluate
   finish_phase evaluation
 fi
 """
@@ -296,7 +335,7 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
         generation_trajectory_s3_key = f"{generation_s3_prefix}/trajectory.jsonl"
         upload_s3_file(generation_trajectory, generation_trajectory_s3_key, "application/x-ndjson")
 
-    agent_info = work_dir / "agent-info.json"
+    agent_info = reports_dir / "generation" / "agent-info.json"
     if agent_info.exists():
         agent_info_s3_key = f"{generation_s3_prefix}/agent-info.json"
         upload_s3_file(agent_info, agent_info_s3_key, "application/json")
@@ -310,7 +349,7 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
         evaluation_trajectory_s3_key = f"{evaluation_s3_prefix}/trajectory.jsonl"
         upload_s3_file(evaluation_trajectory, evaluation_trajectory_s3_key, "application/x-ndjson")
 
-    evaluation_report = reports_dir / "evaluation" / "report.json"
+    evaluation_report = work_dir / "evaluate" / "evaluation.json"
     if evaluation_report.exists():
         evaluation_report_s3_key = f"{evaluation_s3_prefix}/report.json"
         upload_s3_file(evaluation_report, evaluation_report_s3_key, "application/json")

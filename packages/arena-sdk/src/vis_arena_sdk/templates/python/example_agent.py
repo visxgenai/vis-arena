@@ -3,10 +3,29 @@
 This is an EXAMPLE implementation. Replace it with your own agent — keep these
 function names and signatures and `agent.py` will keep working:
 
-    info()                                              -> dict
-    models()                                            -> dict (optional)
-    generate(task_path, data_dir, source_dir, dist_dir) -> dict (notes only)
-    evaluate(task_path, data_dir, source_dir, dist_dir) -> dict (score + criteria)
+    info()                              -> dict
+    models()                            -> dict   # optional
+    generate(workdir)                   -> dict   # writes source/, dist/index.html
+    evaluate(workdir, artifact_url)     -> dict   # score + criteria
+
+Three integration patterns if you already have an agent:
+
+  (1) Import your existing Python package
+      from my_agent import build as my_build
+      def generate(workdir):
+          my_build(task=workdir / "task.md", data=workdir / "data",
+                   out=workdir / "dist")
+          return {"notes": "wrapped my_agent.build"}
+
+  (2) Shell out to your CLI
+      def generate(workdir):
+          subprocess.run([sys.executable, "-m", "my_agent",
+                          "--task", str(workdir / "task.md"),
+                          "--data", str(workdir / "data"),
+                          "--out", str(workdir / "dist")], check=True)
+          return {"notes": "wrapped my_agent CLI"}
+
+  (3) Inline implementation — replace the OpenAI tool-loop below with your own.
 
 Environment variables you may care about:
 
@@ -27,7 +46,6 @@ import os
 import shlex
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -47,18 +65,18 @@ DEFAULT_MODEL = (
 
 GENERATION_PROMPT = """You are a web data visualization agent.
 Build a complete browser-ready visualization for the task.
-Use the bash tool to inspect data and write files. Put editable source in SOURCE_DIR
-and compiled/static browser artifacts in DIST_DIR. The dist artifact must include
-index.html and work without a dev server. When done, call finish with a concise JSON
-summary."""
+Use the bash tool to inspect data and write files. Editable source goes in
+WORKDIR/source/. The deployable artifact goes in WORKDIR/dist/ and must include
+index.html that works without a dev server. When done, call finish with a
+concise JSON summary."""
 
 
 EVALUATION_PROMPT = """You are an impartial web visualization evaluator.
-Evaluate the submission against the task rubric. Prefer browser evidence by using
-the playwright tool. Use source inspection only for behavior that is hard to observe
-interactively, such as animation timing or hidden data transforms. When done, call
-finish with JSON containing score, max_score, summary, criteria, browser,
-source_observations, artifacts, and metadata."""
+Evaluate the rendered artifact at ARTIFACT_URL against the task rubric. Prefer
+browser evidence by using the playwright tool — open ARTIFACT_URL with
+page.goto(...) and interact with the live page. You may also read TASK_FILE
+and DATA_DIR to verify correctness. When done, call finish with JSON containing
+score, max_score, summary, criteria, browser, artifacts, and metadata."""
 
 
 # ---------------------------------------------------------------------------
@@ -68,7 +86,7 @@ source_observations, artifacts, and metadata."""
 def info() -> dict[str, Any]:
     return {
         "name": "python-openai-template",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "commands": ["generate", "evaluate"],
         "providers": ["openai", "arena-cloud"],
         "notes": "Simple LLM tool-loop agent with bash and Playwright tools.",
@@ -84,36 +102,34 @@ def models() -> dict[str, Any]:
     }
 
 
-def generate(task_path: Path, data_dir: Path, source_dir: Path, dist_dir: Path) -> dict[str, Any]:
-    task_text = task_path.read_text(encoding="utf-8")
+def generate(workdir: Path) -> dict[str, Any]:
+    task_text = (workdir / "task.md").read_text(encoding="utf-8")
     prompt = f"""
-TASK_FILE={task_path}
-DATA_DIR={data_dir}
-SOURCE_DIR={source_dir}
-DIST_DIR={dist_dir}
+WORKDIR={workdir}
+TASK_FILE={workdir / "task.md"}
+DATA_DIR={workdir / "data"}
+SOURCE_DIR={workdir / "source"}
+DIST_DIR={workdir / "dist"}
 
 Task:
 {task_text}
 """
-    return _run_tool_loop(GENERATION_PROMPT, prompt, tool_root=source_dir.parent, purpose="generation")
+    return _run_tool_loop(GENERATION_PROMPT, prompt, tool_root=workdir, purpose="generation")
 
 
-def evaluate(task_path: Path, data_dir: Path, source_dir: Path, dist_dir: Path) -> dict[str, Any]:
-    task_text = task_path.read_text(encoding="utf-8")
-    with tempfile.TemporaryDirectory(prefix="vis-arena-eval-") as tmp:
-        tool_root = Path(tmp)
-        prompt = f"""
-TASK_FILE={task_path}
-DATA_DIR={data_dir}
-SOURCE_DIR={source_dir}
-DIST_DIR={dist_dir}
-SCRATCH_DIR={tool_root}
-ENTRYPOINT={(dist_dir / "index.html").as_uri()}
+def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
+    task_text = (workdir / "task.md").read_text(encoding="utf-8")
+    prompt = f"""
+WORKDIR={workdir}
+TASK_FILE={workdir / "task.md"}
+DATA_DIR={workdir / "data"}
+DIST_DIR={workdir / "dist"}
+ARTIFACT_URL={artifact_url}
 
 Task and rubric:
 {task_text}
 """
-        return _run_tool_loop(EVALUATION_PROMPT, prompt, tool_root=tool_root, purpose="evaluation")
+    return _run_tool_loop(EVALUATION_PROMPT, prompt, tool_root=workdir, purpose="evaluation")
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +162,7 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
             "type": "function",
             "function": {
                 "name": "playwright",
-                "description": "Run a Python Playwright script generated by the agent. The script can inspect pages, screenshots, DOM, console logs, and interactions.",
+                "description": "Run a Python Playwright script generated by the agent. The script can open ARTIFACT_URL, inspect the DOM, take screenshots, check console logs, and exercise interactions.",
                 "parameters": {
                     "type": "object",
                     "properties": {
