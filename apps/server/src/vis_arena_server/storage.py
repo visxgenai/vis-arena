@@ -8,16 +8,26 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
-import boto3
 import yaml
-from botocore.client import Config
 from fastapi import HTTPException
 
 from .db import connect, now_iso
+from .local_storage import (
+    local_download,
+    local_file_path,
+    local_presigned_get,
+    local_presigned_put,
+    local_save_bytes,
+    local_storage_enabled,
+    local_upload_file,
+)
 from .settings import settings
 
 
 def s3_client():
+    import boto3
+    from botocore.client import Config
+
     return boto3.client(
         "s3",
         region_name=settings.s3_region,
@@ -27,6 +37,8 @@ def s3_client():
 
 
 def presigned_put(key: str, content_type: str = "application/zip") -> dict[str, Any]:
+    if local_storage_enabled():
+        return local_presigned_put(key)
     client = s3_client()
     return {
         "url": client.generate_presigned_url(
@@ -41,6 +53,8 @@ def presigned_put(key: str, content_type: str = "application/zip") -> dict[str, 
 
 
 def presigned_get(key: str) -> dict[str, Any]:
+    if local_storage_enabled():
+        return local_presigned_get(key)
     client = s3_client()
     return {
         "url": client.generate_presigned_url(
@@ -54,11 +68,17 @@ def presigned_get(key: str) -> dict[str, Any]:
 
 
 def download_s3(key: str, target: Path) -> None:
+    if local_storage_enabled():
+        local_download(key, target)
+        return
     target.parent.mkdir(parents=True, exist_ok=True)
     s3_client().download_file(settings.s3_bucket, key, str(target))
 
 
 def upload_s3_file(path: Path, key: str, content_type: str = "application/octet-stream") -> None:
+    if local_storage_enabled():
+        local_upload_file(path, key)
+        return
     s3_client().upload_file(str(path), settings.s3_bucket, key, ExtraArgs={"ContentType": content_type})
 
 
