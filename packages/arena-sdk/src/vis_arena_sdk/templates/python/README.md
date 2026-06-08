@@ -75,26 +75,31 @@ Run `./agent.py models` inside a cloud job to print the live list.
 From your scaffolded directory (post-`vis-arena init`):
 
 ```bash
-vis-arena submit . --dataset ieee-vis-publications
+vis-arena submit . --name "my-agent-v1" --dataset ieee-vis-publications
 ```
+
+`--name` is what shows on the leaderboard. Without it, the CLI uses the
+directory you submit from — fine for `vis-arena init my-agent && cd my-agent`,
+but if you submit from inside a generic `agent/` folder, give it a real name.
 
 ## Optional: test locally
 
 Local testing uses OpenAI directly (it does not route through the arena).
-Stage a workdir that contains a task and its data, then run the two phases:
+Run the local preflight against a dataset. Use `--task` only for an offline
+task folder or ZIP:
 
 ```bash
-export OPENAI_API_KEY=sk-...
+cat > .env <<'EOF'
+OPENAI_API_KEY=sk-...
+EOF
 
-# 1. Build a workdir from an example task.
-mkdir -p /tmp/vis-run
-cp -r ./task.md ./data /tmp/vis-run/
-
-# 2. Run the protocol.
-./agent.py info --output /tmp/agent-info.json
-./agent.py generate /tmp/vis-run        # writes source/, dist/, generation.json
-./agent.py evaluate /tmp/vis-run        # writes evaluation.json
+vis-arena local run . --dataset monthly-sales
 ```
+
+The command reads `OPENAI_API_KEY` from `.env`, uses your stored arena server
+URL to fetch the dataset, writes a local run directory under
+`.vis-arena/local-runs/`, runs `info`, `generate`, then `evaluate`, and prints
+the score, artifact path, and preview command.
 
 Local evaluation uses Playwright. Install the browser once:
 
