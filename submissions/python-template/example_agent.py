@@ -64,19 +64,33 @@ DEFAULT_MODEL = (
 
 
 GENERATION_PROMPT = """You are a web data visualization agent.
-Build a complete browser-ready visualization for the task.
-Use the bash tool to inspect data and write files. Editable source goes in
-WORKDIR/source/. The deployable artifact goes in WORKDIR/dist/ and must include
-index.html that works without a dev server. When done, call finish with a
-concise JSON summary."""
+
+You are given a WORKDIR containing:
+  task.md           the task description — read this first with the bash tool
+  data/             task data files
+
+Write the artifact into the SAME WORKDIR:
+  source/           editable web source (yours)
+  dist/index.html   required, must work without a dev server
+
+Use the bash tool to inspect data and write files. When done, call finish
+with a concise JSON summary."""
 
 
 EVALUATION_PROMPT = """You are an impartial web visualization evaluator.
-Evaluate the rendered artifact at ARTIFACT_URL against the task rubric. Prefer
-browser evidence by using the playwright tool — open ARTIFACT_URL with
-page.goto(...) and interact with the live page. You may also read TASK_FILE
-and DATA_DIR to verify correctness. When done, call finish with JSON containing
-score, max_score, summary, criteria, browser, artifacts, and metadata."""
+
+You are given:
+  WORKDIR              contains task.md, data/, and dist/index.html (the artifact)
+  ARTIFACT_URL         serves WORKDIR/dist/ over http://127.0.0.1:<port>/
+
+Read WORKDIR/task.md with the bash tool to know what was asked. Then open
+ARTIFACT_URL with the playwright tool (page.goto(...)) and interact with the
+live page — do NOT read dist/index.html as a file. Use WORKDIR/data/ for
+ground-truth correctness checks (e.g., the dataset has 12 rows; does the
+chart show 12 bars?).
+
+When done, call finish with JSON containing score, max_score, summary,
+criteria, browser, artifacts, and metadata."""
 
 
 # ---------------------------------------------------------------------------
@@ -103,33 +117,21 @@ def models() -> dict[str, Any]:
 
 
 def generate(workdir: Path) -> dict[str, Any]:
-    task_text = (workdir / "task.md").read_text(encoding="utf-8")
-    prompt = f"""
-WORKDIR={workdir}
-TASK_FILE={workdir / "task.md"}
-DATA_DIR={workdir / "data"}
-SOURCE_DIR={workdir / "source"}
-DIST_DIR={workdir / "dist"}
-
-Task:
-{task_text}
-"""
-    return _run_tool_loop(GENERATION_PROMPT, prompt, tool_root=workdir, purpose="generation")
+    return _run_tool_loop(
+        GENERATION_PROMPT,
+        f"WORKDIR={workdir}",
+        tool_root=workdir,
+        purpose="generation",
+    )
 
 
 def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
-    task_text = (workdir / "task.md").read_text(encoding="utf-8")
-    prompt = f"""
-WORKDIR={workdir}
-TASK_FILE={workdir / "task.md"}
-DATA_DIR={workdir / "data"}
-DIST_DIR={workdir / "dist"}
-ARTIFACT_URL={artifact_url}
-
-Task and rubric:
-{task_text}
-"""
-    return _run_tool_loop(EVALUATION_PROMPT, prompt, tool_root=workdir, purpose="evaluation")
+    return _run_tool_loop(
+        EVALUATION_PROMPT,
+        f"WORKDIR={workdir}\nARTIFACT_URL={artifact_url}",
+        tool_root=workdir,
+        purpose="evaluation",
+    )
 
 
 # ---------------------------------------------------------------------------

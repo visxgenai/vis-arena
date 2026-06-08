@@ -25,21 +25,6 @@ data:
   - path: data/sales.csv
     role: primary
     media_type: text/csv
-rubric:
-  total_points: 100
-  criteria:
-    - id: correctness
-      points: 35
-      description: Accurately encodes all monthly sales values.
-    - id: usability
-      points: 25
-      description: Provides readable labels, units, and hover details.
-    - id: visual_design
-      points: 20
-      description: Uses clear hierarchy and appropriate chart choices.
-    - id: robustness
-      points: 20
-      description: Works at desktop and mobile widths without overlap.
 constraints:
   artifact_entrypoint: index.html
   viewport_sizes:
@@ -54,7 +39,15 @@ evaluation:
 Build an interactive web visualization for the provided sales data...
 ```
 
-The Markdown body should describe the user-facing task in natural language. The frontmatter supplies stable metadata for automated runners.
+The Markdown body should describe the user-facing task in natural language.
+The frontmatter supplies stable metadata for automated runners.
+
+**Rubrics are intentionally not specified here.** The evaluator agent picks
+criteria itself by reading the task. Embedding a numeric rubric in `task.md`
+would incentivize the generation agent (which also reads `task.md`) to
+optimize directly for the rubric rather than for solving the task well.
+`evaluation.json` still carries a `criteria` field — that is the evaluator's
+output, not a pre-baked task spec.
 
 ## Submission Bundle
 
