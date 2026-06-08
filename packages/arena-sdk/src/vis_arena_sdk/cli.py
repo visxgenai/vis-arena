@@ -204,7 +204,8 @@ def datasets_download(dataset_id: str, output: Path, server_url: Optional[str] =
     """Download a dataset bundle."""
     client = _client(server_url, token)
     try:
-        path = client.download_dataset(dataset_id, output)
+        dataset = client.resolve_dataset(dataset_id)
+        path = client.download_dataset(dataset.id, output)
         typer.echo(str(path))
     finally:
         client.close()
