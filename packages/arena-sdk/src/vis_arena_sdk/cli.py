@@ -174,7 +174,7 @@ def submit(
     token: Optional[str] = None,
 ) -> None:
     """Upload an agent submission."""
-    _upload_submission(path, name=name or path.stem, dataset_id=dataset_id, server_url=server_url, token=token)
+    _upload_submission(path, name=name or _default_submission_name(path), dataset_id=dataset_id, server_url=server_url, token=token)
 
 
 @datasets_app.command("list")
@@ -215,6 +215,17 @@ def datasets_download(dataset_id: str, output: Path, server_url: Optional[str] =
 def submissions_upload(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
     """Upload an agent submission ZIP."""
     _upload_submission(path, name=name, dataset_id=dataset_id, server_url=server_url, token=token)
+
+
+def _default_submission_name(path: Path) -> str:
+    """Pick a fallback name when --name is omitted.
+
+    `path.stem` is "" for `Path(".")`, which would create a submission literally
+    named "" on the leaderboard. Resolve first so submissions from inside a
+    bundle dir use the dir name; strip a `.zip` suffix when present.
+    """
+    resolved = path.resolve()
+    return resolved.stem if resolved.suffix == ".zip" else resolved.name
 
 
 def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
