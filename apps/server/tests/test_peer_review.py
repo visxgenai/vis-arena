@@ -276,6 +276,128 @@ def test_submission_jobs_api_includes_generation_and_peer_reviews(client: TestCl
     assert items[review_job]["score"] == 91
 
 
+def test_public_leaderboard_groups_participants_and_round_history(client: TestClient) -> None:
+    owner_id = _insert_user("owner-a")
+    reviewer_id = _insert_user("owner-b")
+    dataset_id, (task_id,) = _insert_dataset()
+    old_submission = _insert_submission(
+        owner_id,
+        status="succeeded",
+        finalized_at="2026-06-01T00:00:00+00:00",
+        created_at="2026-06-01T00:00:00+00:00",
+    )
+    latest_submission = _insert_submission(
+        owner_id,
+        status="succeeded",
+        finalized_at="2026-06-02T00:00:00+00:00",
+        created_at="2026-06-02T00:00:00+00:00",
+    )
+    reviewer_submission = _insert_submission(
+        reviewer_id,
+        status="succeeded",
+        finalized_at="2026-06-02T00:01:00+00:00",
+        created_at="2026-06-02T00:01:00+00:00",
+    )
+    old_job = _insert_generation_job(old_submission, dataset_id, task_id, status="succeeded")
+    latest_job = _insert_generation_job(latest_submission, dataset_id, task_id, status="succeeded")
+    round_id = _id("round")
+    now = "2026-06-02T01:00:00+00:00"
+    with connect() as db:
+        db.execute("update submissions set score = ? where id = ?", (68, old_submission))
+        db.execute("update submissions set score = ? where id = ?", (82, latest_submission))
+        db.execute("update submissions set score = ? where id = ?", (70, reviewer_submission))
+        db.execute(
+            """
+            update jobs
+            set result_json = ?, preview_s3_key = ?, completed_at = ?, run_seconds = ?
+            where id in (?, ?)
+            """,
+            (
+                json.dumps({"score": 82, "max_score": 100, "summary": "ok"}),
+                f"jobs/{latest_job}/generation/preview/index.html",
+                now,
+                2.5,
+                old_job,
+                latest_job,
+            ),
+        )
+        db.execute(
+            """
+            insert into review_rounds (
+              id, name, status, starts_at, ends_at, generation_started_at,
+              peer_review_started_at, completed_at, interval_seconds, created_at, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                round_id,
+                "Round 1",
+                "complete",
+                "2026-06-02T00:00:00+00:00",
+                "2026-06-02T01:00:00+00:00",
+                now,
+                now,
+                now,
+                3600,
+                now,
+                now,
+            ),
+        )
+        for user_id, submission_id, reason in (
+            (owner_id, latest_submission, "interval_latest"),
+            (reviewer_id, reviewer_submission, "interval_latest"),
+        ):
+            db.execute(
+                "insert into round_participants (round_id, user_id, submission_id, selection_reason, selected_at) values (?, ?, ?, ?, ?)",
+                (round_id, user_id, submission_id, reason, now),
+            )
+        db.execute(
+            """
+            insert into evaluations (
+              id, round_id, artifact_job_id, evaluator_type, evaluator_user_id,
+              evaluator_submission_id, evaluator_name, job_id, status, score,
+              max_score, result_json, evaluation_report_s3_key,
+              evaluation_trajectory_s3_key, run_seconds, error, created_at,
+              completed_at, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _id("eval"),
+                round_id,
+                latest_job,
+                "peer",
+                reviewer_id,
+                reviewer_submission,
+                "reviewer",
+                _id("review-job"),
+                "succeeded",
+                82,
+                100,
+                json.dumps({"score": 82, "max_score": 100}),
+                f"jobs/{latest_job}/evaluation/report.json",
+                f"jobs/{latest_job}/evaluation/trajectory.jsonl",
+                3.0,
+                None,
+                now,
+                now,
+                now,
+            ),
+        )
+
+    res = client.get("/v1/leaderboard")
+
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["items"]
+    assert body["participants"][0]["user_id"] == owner_id
+    assert body["participants"][0]["best_score"] == 82
+    assert body["participants"][0]["best_submission"]["id"] == latest_submission
+    assert body["participants"][0]["best_submission"]["jobs"][0]["evaluations"][0]["score"] == 82
+    assert body["rounds"][0]["participants"][0]["is_new_submission"] is True
+    assert "owner_email" not in body["participants"][0]
+
+
 def test_llm_usage_is_attributed_to_consuming_submission(client: TestClient) -> None:
     generator_owner, generator_auth = _register(client)
     reviewer_owner, reviewer_auth = _register(client)

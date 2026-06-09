@@ -4,6 +4,7 @@ import os
 import posixpath
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from urllib.parse import quote
 
 import jwt
@@ -360,30 +361,9 @@ def leaderboard(request: Request) -> dict:
             """
         ).fetchall()
         submission_ids = [row["id"] for row in rows]
-        jobs_by_submission: dict[str, list[dict]] = {submission_id: [] for submission_id in submission_ids}
-        if submission_ids:
-            placeholders = ",".join("?" for _ in submission_ids)
-            job_rows = db.execute(
-                f"""
-                select id, submission_id, dataset_id, task_id, status, result_json,
-                       preview_s3_key, completed_at, run_seconds
-                from jobs
-                where submission_id in ({placeholders})
-                  and coalesce(job_type, 'generation') = 'generation'
-                order by task_id, completed_at desc
-                """,
-                submission_ids,
-            ).fetchall()
-            for job_row in job_rows:
-                job = dict(job_row)
-                preview_job_id = job["id"] if job.get("preview_s3_key") else None
-                job["result"] = decode_json(job.pop("result_json"), None)
-                job["preview_url"] = (
-                    str(request.url_for("redirect_job_preview", job_id=preview_job_id))
-                    if preview_job_id
-                    else None
-                )
-                jobs_by_submission.setdefault(job["submission_id"], []).append(job)
+        jobs_by_submission = _leaderboard_jobs_by_submission(db, request, submission_ids)
+        participants = _leaderboard_participants(db, request)
+        rounds = _leaderboard_rounds(db)
     items = []
     for row in rows:
         entry = dict(row)
@@ -395,7 +375,198 @@ def leaderboard(request: Request) -> dict:
         )
         entry["jobs"] = jobs_by_submission.get(entry["id"], [])
         items.append(entry)
-    return {"items": items}
+    return {"items": items, "participants": participants, "rounds": rounds}
+
+
+def _leaderboard_jobs_by_submission(db, request: Request, submission_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    jobs_by_submission: dict[str, list[dict[str, Any]]] = {submission_id: [] for submission_id in submission_ids}
+    if not submission_ids:
+        return jobs_by_submission
+    placeholders = ",".join("?" for _ in submission_ids)
+    job_rows = db.execute(
+        f"""
+        select id, submission_id, job_type, round_id, generator_submission_id,
+               dataset_id, task_id, status, result_json, preview_s3_key,
+               generation_s3_prefix, evaluation_s3_prefix, agent_info_s3_key,
+               generation_trajectory_s3_key, evaluation_trajectory_s3_key,
+               generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
+               evaluation_report_s3_key, started_at, completed_at, run_seconds, error
+        from jobs
+        where submission_id in ({placeholders})
+          and coalesce(job_type, 'generation') = 'generation'
+        order by task_id, completed_at desc
+        """,
+        submission_ids,
+    ).fetchall()
+    job_ids = [row["id"] for row in job_rows]
+    evaluations_by_job = _leaderboard_evaluations_by_job(db, job_ids)
+    for job_row in job_rows:
+        job = dict(job_row)
+        preview_job_id = job["id"] if job.get("preview_s3_key") else None
+        job["result"] = decode_json(job.pop("result_json"), None)
+        job["preview_url"] = (
+            str(request.url_for("redirect_job_preview", job_id=preview_job_id))
+            if preview_job_id
+            else None
+        )
+        job["evaluations"] = evaluations_by_job.get(job["id"], [])
+        jobs_by_submission.setdefault(job["submission_id"], []).append(job)
+    return jobs_by_submission
+
+
+def _leaderboard_evaluations_by_job(db, job_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    evaluations_by_job: dict[str, list[dict[str, Any]]] = {job_id: [] for job_id in job_ids}
+    if not job_ids:
+        return evaluations_by_job
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = db.execute(
+        f"""
+        select artifact_job_id, evaluator_type, evaluator_name, status, score, max_score,
+               evaluation_report_s3_key, evaluation_trajectory_s3_key,
+               run_seconds, completed_at
+        from evaluations
+        where artifact_job_id in ({placeholders})
+        order by evaluator_type, completed_at
+        """,
+        job_ids,
+    ).fetchall()
+    for row in rows:
+        item = dict(row)
+        evaluations_by_job.setdefault(item.pop("artifact_job_id"), []).append(item)
+    return evaluations_by_job
+
+
+def _leaderboard_participants(db, request: Request) -> list[dict[str, Any]]:
+    rows = db.execute(
+        """
+        select submissions.id, submissions.name, submissions.status, submissions.score,
+               submissions.created_at, submissions.finalized_at,
+               users.id as user_id, users.name as owner_name,
+               (select j.id from jobs j
+                where j.submission_id = submissions.id
+                  and coalesce(j.job_type, 'generation') = 'generation'
+                  and j.preview_s3_key is not null
+                order by j.completed_at desc
+                limit 1) as preview_job_id
+        from submissions join users on users.id = submissions.owner_id
+        where submissions.finalized_at is not null
+        order by coalesce(users.name, users.id), submissions.finalized_at desc, submissions.created_at desc
+        """
+    ).fetchall()
+    submission_ids = [row["id"] for row in rows]
+    jobs_by_submission = _leaderboard_jobs_by_submission(db, request, submission_ids)
+    participants: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        submission = dict(row)
+        user_id = submission.pop("user_id")
+        owner_name = submission.pop("owner_name") or "Anonymous participant"
+        preview_job_id = submission.pop("preview_job_id", None)
+        submission["preview_url"] = (
+            str(request.url_for("redirect_job_preview", job_id=preview_job_id))
+            if preview_job_id
+            else None
+        )
+        submission["jobs"] = jobs_by_submission.get(submission["id"], [])
+        participant = participants.setdefault(
+            user_id,
+            {
+                "user_id": user_id,
+                "owner_name": owner_name,
+                "submissions": [],
+                "best_submission": None,
+                "latest_submission": None,
+                "best_score": None,
+                "latest_score": None,
+                "rank": None,
+            },
+        )
+        participant["submissions"].append(submission)
+        if participant["latest_submission"] is None:
+            participant["latest_submission"] = submission
+            participant["latest_score"] = submission.get("score")
+        if submission.get("score") is not None and (
+            participant["best_score"] is None or submission["score"] > participant["best_score"]
+        ):
+            participant["best_score"] = submission["score"]
+            participant["best_submission"] = submission
+    ordered = sorted(
+        participants.values(),
+        key=lambda item: (
+            item["best_score"] is None,
+            -(item["best_score"] or 0),
+            str(item["owner_name"]).lower(),
+        ),
+    )
+    for index, participant in enumerate(ordered, start=1):
+        participant["rank"] = index if participant["best_score"] is not None else None
+    return ordered
+
+
+def _leaderboard_rounds(db) -> list[dict[str, Any]]:
+    rounds = db.execute(
+        """
+        select *
+        from review_rounds
+        order by coalesce(starts_at, created_at)
+        limit 50
+        """
+    ).fetchall()
+    items = []
+    previous_by_user: dict[str, dict[str, Any]] = {}
+    for index, round_row in enumerate(rounds, start=1):
+        round_item = dict(round_row)
+        scores = round_leaderboard(round_item["id"], limit=100000)
+        score_by_user = {score["user_id"]: score for score in scores}
+        participants = db.execute(
+            """
+            select rp.user_id, rp.submission_id, rp.selection_reason,
+                   users.name as owner_name,
+                   submissions.name as submission_name
+            from round_participants rp
+            join users on users.id = rp.user_id
+            join submissions on submissions.id = rp.submission_id
+            where rp.round_id = ?
+            order by coalesce(users.name, users.id)
+            """,
+            (round_item["id"],),
+        ).fetchall()
+        ranked_scores = sorted(
+            [score for score in scores if score.get("round_score") is not None],
+            key=lambda item: item["round_score"],
+            reverse=True,
+        )
+        rank_by_user = {score["user_id"]: rank for rank, score in enumerate(ranked_scores, start=1)}
+        timeline = []
+        for participant in participants:
+            row = dict(participant)
+            score = score_by_user.get(row["user_id"], {})
+            previous = previous_by_user.get(row["user_id"])
+            rank = rank_by_user.get(row["user_id"])
+            timeline_item = {
+                **row,
+                "owner_name": row.get("owner_name") or "Anonymous participant",
+                "round_score": score.get("round_score"),
+                "rank": rank,
+                "score_delta": (
+                    score.get("round_score") - previous["round_score"]
+                    if previous and score.get("round_score") is not None and previous.get("round_score") is not None
+                    else None
+                ),
+                "rank_delta": (
+                    previous["rank"] - rank
+                    if previous and rank is not None and previous.get("rank") is not None
+                    else None
+                ),
+                "is_new_submission": row["selection_reason"] == "interval_latest",
+                "carried_over": row["selection_reason"] == "carried_forward",
+            }
+            timeline.append(timeline_item)
+            if score.get("round_score") is not None:
+                previous_by_user[row["user_id"]] = timeline_item
+        round_item["index"] = index
+        round_item["participants"] = timeline
+        items.append(round_item)
+    return items
 
 
 @app.post("/v1/llm/token", response_model=LLMTokenResponse)
