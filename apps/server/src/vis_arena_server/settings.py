@@ -65,6 +65,10 @@ class Settings:
     evaluator_timeout_seconds: int = int(os.environ.get("VIS_ARENA_EVALUATOR_TIMEOUT_SECONDS", "1800"))
     record_trajectory: bool = os.environ.get("VIS_ARENA_RECORD_TRAJECTORY", "true").lower() == "true"
     arena_api_token: str | None = os.environ.get("VIS_ARENA_WORKER_API_TOKEN")
+    rounds_enabled: bool = os.environ.get("VIS_ARENA_ROUNDS_ENABLED", "false").lower() == "true"
+    round_interval_seconds: int = int(os.environ.get("VIS_ARENA_ROUND_INTERVAL_SECONDS", "3600"))
+    auto_start_peer_review: bool = os.environ.get("VIS_ARENA_AUTO_START_PEER_REVIEW", "false").lower() == "true"
+    central_judge_submission_id: str | None = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_SUBMISSION_ID") or None
 
 
 settings = Settings()

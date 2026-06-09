@@ -9,7 +9,7 @@ from zipfile import ZipFile
 import pytest
 from fastapi.testclient import TestClient
 
-from vis_arena_server import evaluator, storage
+from vis_arena_server import evaluator, rounds, storage
 from vis_arena_server.db import connect, init_db, now_iso
 
 
@@ -17,7 +17,7 @@ from vis_arena_server.db import connect, init_db, now_iso
 def _clean_db() -> None:
     init_db()
     with connect() as db:
-        for table in ("llm_usage", "jobs", "tasks", "submissions", "datasets", "users"):
+        for table in ("llm_usage", "evaluations", "round_participants", "jobs", "review_rounds", "tasks", "submissions", "datasets", "users"):
             db.execute(f"delete from {table}")
 
 
@@ -625,3 +625,174 @@ def test_worker_peer_review_uses_target_preview_url_and_reads_evaluation(tmp_pat
 
     assert downloads == ["submissions/reviewer/submission.zip"]
     assert result["result"] == {"score": 77}
+
+
+def test_round_close_snapshots_latest_submission_per_user_and_queues_generation_jobs() -> None:
+    start = "2026-06-01T00:00:00+00:00"
+    end = "2026-06-01T01:00:00+00:00"
+    first_owner = _insert_user()
+    second_owner = _insert_user()
+    late_owner = _insert_user()
+    _dataset_id, task_ids = _insert_dataset(task_count=2)
+    old_first_submission = _insert_submission(first_owner, finalized_at="2026-05-31T23:00:00+00:00")
+    latest_first_submission = _insert_submission(first_owner, finalized_at="2026-06-01T00:30:00+00:00")
+    carried_second_submission = _insert_submission(second_owner, finalized_at="2026-05-31T22:00:00+00:00")
+    _late_submission = _insert_submission(late_owner, finalized_at="2026-06-01T01:01:00+00:00")
+    round_id = rounds.open_round("Smoke Round", starts_at=start, ends_at=end)["id"]
+
+    detail = rounds.close_round(round_id)
+
+    assert detail["status"] == "generation"
+    participants = {item["user_id"]: item for item in detail["participants"]}
+    assert participants[first_owner]["submission_id"] == latest_first_submission
+    assert participants[first_owner]["selection_reason"] == "interval_latest"
+    assert participants[second_owner]["submission_id"] == carried_second_submission
+    assert participants[second_owner]["selection_reason"] == "carried_forward"
+    assert late_owner not in participants
+    assert old_first_submission not in {item["submission_id"] for item in participants.values()}
+    with connect() as db:
+        jobs = db.execute(
+            """
+            select round_id, submission_id, job_type, task_id, status
+            from jobs
+            where round_id = ?
+            order by submission_id, task_id
+            """,
+            (round_id,),
+        ).fetchall()
+
+    assert len(jobs) == 2 * len(task_ids)
+    assert {row["submission_id"] for row in jobs} == {latest_first_submission, carried_second_submission}
+    assert {row["job_type"] for row in jobs} == {"generation"}
+    assert {row["status"] for row in jobs} == {"queued"}
+
+
+def test_round_admin_api_requires_admin_and_opens_round(client: TestClient, monkeypatch) -> None:
+    admin_email = f"{_id('admin')}@example.com"
+    admin_res = client.post("/v1/auth/register", json={"email": admin_email, "password": "password123", "name": "Admin"})
+    assert admin_res.status_code == 200, admin_res.text
+    admin_auth = {"Authorization": f"Bearer {admin_res.json()['access_token']}"}
+    _user_id, non_admin_auth = _register(client)
+    monkeypatch.setenv("VIS_ARENA_ADMIN_EMAILS", admin_email)
+
+    forbidden = client.post("/v1/peer-reviews/rounds", headers=non_admin_auth, json={"name": "Denied Round"})
+    opened = client.post(
+        "/v1/peer-reviews/rounds",
+        headers=admin_auth,
+        json={
+            "name": "API Round",
+            "starts_at": "2026-06-01T00:00:00+00:00",
+            "ends_at": "2026-06-01T01:00:00+00:00",
+        },
+    )
+    listed = client.get("/v1/peer-reviews/rounds", headers=admin_auth)
+
+    assert forbidden.status_code == 403
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["name"] == "API Round"
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()["items"]] == [opened.json()["id"]]
+
+
+def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_scores() -> None:
+    dataset_id, (task_id,) = _insert_dataset(task_count=1)
+    first_owner = _insert_user()
+    second_owner = _insert_user()
+    first_submission = _insert_submission(first_owner, finalized_at="2026-06-01T00:10:00+00:00")
+    second_submission = _insert_submission(second_owner, finalized_at="2026-06-01T00:20:00+00:00")
+    round_id = rounds.open_round(
+        "Peer Round",
+        starts_at="2026-06-01T00:00:00+00:00",
+        ends_at="2026-06-01T01:00:00+00:00",
+    )["id"]
+    rounds.close_round(round_id)
+    with connect() as db:
+        generation_jobs = db.execute(
+            "select id, submission_id from jobs where round_id = ? and job_type = 'generation'",
+            (round_id,),
+        ).fetchall()
+        assert len(generation_jobs) == 2
+        for job in generation_jobs:
+            db.execute(
+                """
+                update jobs
+                set status = 'succeeded',
+                    preview_s3_key = ?,
+                    artifact_s3_prefix = ?,
+                    completed_at = ?,
+                    updated_at = ?
+                where id = ?
+                """,
+                (
+                    f"jobs/{job['id']}/generation/preview/index.html",
+                    f"jobs/{job['id']}/generation/artifacts",
+                    now_iso(),
+                    now_iso(),
+                    job["id"],
+                ),
+            )
+
+    first_detail = rounds.start_peer_review(round_id)
+    second_detail = rounds.start_peer_review(round_id)
+
+    assert first_detail["status"] == "peer_review"
+    assert len(first_detail["evaluations"]) == 2
+    assert len(second_detail["evaluations"]) == 2
+    with connect() as db:
+        review_jobs = db.execute(
+            """
+            select id, submission_id, generator_submission_id, review_target_job_id,
+                   reviewer_user_id, job_type, status
+            from jobs
+            where round_id = ? and job_type = 'peer_evaluation'
+            order by submission_id
+            """,
+            (round_id,),
+        ).fetchall()
+        evaluations = db.execute("select * from evaluations where round_id = ? order by evaluator_submission_id", (round_id,)).fetchall()
+
+    assert len(review_jobs) == 2
+    assert len(evaluations) == 2
+    assert {row["job_type"] for row in review_jobs} == {"peer_evaluation"}
+    assert {row["status"] for row in review_jobs} == {"queued"}
+    for job in review_jobs:
+        assert job["submission_id"] != job["generator_submission_id"]
+        if job["submission_id"] == first_submission:
+            assert job["reviewer_user_id"] == first_owner
+            assert job["generator_submission_id"] == second_submission
+        else:
+            assert job["submission_id"] == second_submission
+            assert job["reviewer_user_id"] == second_owner
+            assert job["generator_submission_id"] == first_submission
+
+    for job in review_jobs:
+        score = 90 if job["generator_submission_id"] == first_submission else 70
+        evaluator.complete_job(
+            job["id"],
+            {
+                "result": {"score": score, "max_score": 100},
+                "evaluation_report_s3_key": f"jobs/{job['id']}/evaluation/report.json",
+                "evaluation_trajectory_s3_key": f"jobs/{job['id']}/evaluation/trajectory.jsonl",
+                "started_at": "2026-06-01T01:00:00+00:00",
+                "completed_at": "2026-06-01T01:00:02+00:00",
+                "run_seconds": 2.0,
+            },
+        )
+
+    leaderboard = rounds.round_leaderboard(round_id)
+    with connect() as db:
+        completed_round = db.execute("select status from review_rounds where id = ?", (round_id,)).fetchone()
+        first_row = db.execute("select status, score from submissions where id = ?", (first_submission,)).fetchone()
+        second_row = db.execute("select status, score from submissions where id = ?", (second_submission,)).fetchone()
+        stored_evals = db.execute("select status, score, run_seconds, evaluation_report_s3_key from evaluations where round_id = ?", (round_id,)).fetchall()
+
+    assert completed_round["status"] == "complete"
+    assert {item["submission_id"]: item["round_score"] for item in leaderboard} == {
+        first_submission: 90.0,
+        second_submission: 70.0,
+    }
+    assert dict(first_row) == {"status": "succeeded", "score": 90.0}
+    assert dict(second_row) == {"status": "succeeded", "score": 70.0}
+    assert {row["status"] for row in stored_evals} == {"succeeded"}
+    assert {row["run_seconds"] for row in stored_evals} == {2.0}
+    assert all(row["evaluation_report_s3_key"] for row in stored_evals)

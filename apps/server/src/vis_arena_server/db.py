@@ -60,6 +60,7 @@ def init_db() -> None:
               id text primary key,
               submission_id text not null,
               job_type text not null default 'generation',
+              round_id text,
               generator_submission_id text,
               review_target_job_id text,
               reviewer_user_id text,
@@ -98,6 +99,55 @@ def init_db() -> None:
               latency_ms integer not null,
               created_at text not null
             );
+            create table if not exists review_rounds (
+              id text primary key,
+              name text not null,
+              status text not null,
+              starts_at text,
+              ends_at text,
+              generation_started_at text,
+              peer_review_started_at text,
+              completed_at text,
+              interval_seconds integer,
+              created_at text not null,
+              updated_at text not null
+            );
+            create table if not exists round_participants (
+              round_id text not null,
+              user_id text not null,
+              submission_id text not null,
+              selection_reason text not null,
+              selected_at text not null,
+              primary key (round_id, user_id)
+            );
+            create table if not exists evaluations (
+              id text primary key,
+              round_id text not null,
+              artifact_job_id text not null,
+              evaluator_type text not null,
+              evaluator_user_id text,
+              evaluator_submission_id text not null,
+              evaluator_name text,
+              job_id text,
+              status text not null,
+              score real,
+              max_score real,
+              result_json text,
+              evaluation_report_s3_key text,
+              evaluation_trajectory_s3_key text,
+              run_seconds real,
+              error text,
+              created_at text not null,
+              completed_at text,
+              updated_at text not null
+            );
+            create index if not exists idx_jobs_round_type on jobs(round_id, job_type);
+            create index if not exists idx_evaluations_round_artifact on evaluations(round_id, artifact_job_id);
+            create index if not exists idx_evaluations_evaluator_sub on evaluations(evaluator_submission_id);
+            create index if not exists idx_round_participants_user on round_participants(user_id);
+            create unique index if not exists idx_evaluations_unique on evaluations(
+              round_id, artifact_job_id, evaluator_type, evaluator_submission_id
+            );
             """
         )
         _add_column(db, "datasets", "s3_key text")
@@ -105,6 +155,7 @@ def init_db() -> None:
         _add_column(db, "submissions", "finalized_at text")
         _add_column(db, "submissions", "reviewer_eligible_at text")
         _add_column(db, "jobs", "job_type text not null default 'generation'")
+        _add_column(db, "jobs", "round_id text")
         _add_column(db, "jobs", "generator_submission_id text")
         _add_column(db, "jobs", "review_target_job_id text")
         _add_column(db, "jobs", "reviewer_user_id text")

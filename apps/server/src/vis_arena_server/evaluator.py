@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -12,21 +13,50 @@ from typing import Any
 
 from .auth import create_token
 from .db import connect, now_iso, row_to_dict
+from .rounds import (
+    EVALUATION_JOB_TYPES,
+    advance_due_rounds,
+    complete_round_if_ready,
+    maybe_open_next_round,
+    queue_central_evaluation_for_generation,
+    write_evaluation_job_failure,
+    write_evaluation_job_result,
+    write_self_evaluation_for_generation,
+)
 from .settings import settings
 from .storage import copy_task_data, download_s3, make_zip, safe_extract_zip, upload_s3_directory, upload_s3_file
 
 
 def run() -> None:
-    while True:
-        job = claim_job()
-        if job is None:
-            time.sleep(3)
-            continue
+    stop_event = threading.Event()
+    if settings.rounds_enabled:
+        scheduler = threading.Thread(target=round_trigger_loop, args=(stop_event,), daemon=True)
+        scheduler.start()
+    try:
+        while True:
+            job = claim_job()
+            if job is None:
+                time.sleep(3)
+                continue
+            try:
+                result = run_job(job)
+                complete_job(job["id"], result)
+            except Exception as exc:
+                fail_job(job["id"], exc)
+    finally:
+        stop_event.set()
+
+
+def round_trigger_loop(stop_event: threading.Event) -> None:
+    while not stop_event.is_set():
         try:
-            result = run_job(job)
-            complete_job(job["id"], result)
-        except Exception as exc:
-            fail_job(job["id"], exc)
+            maybe_open_next_round()
+            advance_due_rounds()
+        except Exception:
+            # Keep the worker alive; job failures are recorded per job, but the
+            # scheduler should retry transient DB/config issues on the next tick.
+            pass
+        stop_event.wait(60)
 
 
 def claim_job() -> dict[str, Any] | None:
@@ -59,7 +89,7 @@ def claim_job() -> dict[str, Any] | None:
 
 
 def run_job(job: dict[str, Any]) -> dict[str, Any]:
-    if (job.get("job_type") or "generation") == "peer_review":
+    if (job.get("job_type") or "generation") in EVALUATION_JOB_TYPES:
         return run_peer_review_job(job)
     return run_generation_job(job)
 
@@ -143,7 +173,7 @@ def run_peer_review_job(job: dict[str, Any]) -> dict[str, Any]:
         runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
         update_job_runtime_metadata(job["id"], runtime, runtime_files)
         if runtime["returncode"] != 0:
-            raise RuntimeError(f"Docker peer review failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
+            raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
         evaluation = json.loads((work_dir / "evaluate" / "evaluation.json").read_text(encoding="utf-8"))
         return {
@@ -666,7 +696,7 @@ def _update_generator_submission_rollup(db, submission_id: str | None, now: str)
         """
         select count(*) as count
         from jobs
-        where job_type = 'peer_review'
+        where job_type in ('peer_review', 'peer_evaluation', 'central_evaluation')
           and generator_submission_id = ?
           and status in ('queued', 'running', 'waiting_reviewer')
         """,
@@ -679,7 +709,7 @@ def _update_generator_submission_rollup(db, submission_id: str | None, now: str)
             """
             select json_extract(result_json, '$.score') as score
             from jobs
-            where job_type = 'peer_review'
+            where job_type in ('peer_review', 'peer_evaluation')
               and generator_submission_id = ?
               and status = 'succeeded'
             """,
@@ -709,6 +739,7 @@ def _job_scores(db, query: str, params: tuple[str, ...]) -> list[float]:
 
 def complete_job(job_id: str, result: dict[str, Any]) -> None:
     now = now_iso()
+    round_to_check = None
     with connect() as db:
         job = row_to_dict(db.execute("select * from jobs where id = ?", (job_id,)).fetchone())
         if not job:
@@ -729,23 +760,32 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
                 json.dumps(result.get("result")),
                 result.get("artifact_s3_prefix"),
                 result.get("preview_s3_key"),
-                result["generation_s3_prefix"],
-                result["evaluation_s3_prefix"],
-                result["agent_info_s3_key"],
-                result["generation_trajectory_s3_key"],
-                result["evaluation_trajectory_s3_key"],
-                result["evaluation_report_s3_key"],
-                result["started_at"],
-                result["completed_at"],
-                result["run_seconds"],
+                result.get("generation_s3_prefix"),
+                result.get("evaluation_s3_prefix"),
+                result.get("agent_info_s3_key"),
+                result.get("generation_trajectory_s3_key"),
+                result.get("evaluation_trajectory_s3_key"),
+                result.get("evaluation_report_s3_key"),
+                result.get("started_at"),
+                result.get("completed_at"),
+                result.get("run_seconds"),
                 now,
                 job_id,
             ),
         )
         generator_submission_id = job["generator_submission_id"] or job["submission_id"]
         if job_type == "generation":
-            queue_peer_reviews_for_generation(db, job_id, now)
+            write_self_evaluation_for_generation(db, job, result, now)
+            queue_central_evaluation_for_generation(db, job_id, now)
+            if not job.get("round_id") and not settings.rounds_enabled:
+                queue_peer_reviews_for_generation(db, job_id, now)
+        elif job_type in EVALUATION_JOB_TYPES:
+            write_evaluation_job_result(db, job, result, now)
+            if job.get("round_id"):
+                round_to_check = job["round_id"]
         _update_generator_submission_rollup(db, generator_submission_id, now)
+    if round_to_check:
+        complete_round_if_ready(round_to_check)
 
 
 def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_files: dict[str, str | None]) -> None:
@@ -778,8 +818,14 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
 
 def fail_job(job_id: str, exc: Exception) -> None:
     now = now_iso()
+    round_to_check = None
     with connect() as db:
         job = row_to_dict(db.execute("select * from jobs where id = ?", (job_id,)).fetchone())
         db.execute("update jobs set status = ?, error = ?, updated_at = ? where id = ?", ("failed", str(exc), now, job_id))
         if job:
+            write_evaluation_job_failure(db, job, str(exc), now)
+            if job.get("round_id"):
+                round_to_check = job["round_id"]
             _update_generator_submission_rollup(db, job["generator_submission_id"] or job["submission_id"], now)
+    if round_to_check:
+        complete_round_if_ready(round_to_check)

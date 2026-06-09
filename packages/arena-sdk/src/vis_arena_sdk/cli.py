@@ -29,11 +29,15 @@ submissions_app = typer.Typer(help="Submission commands")
 results_app = typer.Typer(help="Result commands")
 local_app = typer.Typer(help="Local agent development commands")
 llm_app = typer.Typer(help="Cloud LLM token commands")
+admin_app = typer.Typer(help="Admin commands")
+admin_rounds_app = typer.Typer(help="Peer-review round admin commands")
 app.add_typer(datasets_app, name="datasets")
 app.add_typer(submissions_app, name="submissions")
 app.add_typer(results_app, name="results")
 app.add_typer(local_app, name="local")
 app.add_typer(llm_app, name="llm")
+app.add_typer(admin_app, name="admin")
+admin_app.add_typer(admin_rounds_app, name="rounds")
 
 
 @app.command()
@@ -352,7 +356,7 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
 
 def _format_submission_status(status: str, score: float | None, jobs: list[dict], usage: dict) -> str:
     generation_jobs = [job for job in jobs if (job.get("job_type") or "generation") == "generation"]
-    review_jobs = [job for job in jobs if job.get("job_type") == "peer_review"]
+    review_jobs = [job for job in jobs if job.get("job_type") in {"peer_review", "peer_evaluation", "central_evaluation"}]
     run_seconds = max((float(job["run_seconds"]) for job in jobs if job.get("run_seconds") is not None), default=None)
     review_run_seconds = max((float(job["run_seconds"]) for job in review_jobs if job.get("run_seconds") is not None), default=None)
     total_tokens = int((usage.get("summary") or {}).get("total_tokens") or 0)
@@ -493,8 +497,99 @@ def llm_token(provider: str, model: str, purpose: str = "generation", server_url
         client.close()
 
 
+@admin_rounds_app.command("list")
+def admin_rounds_list(limit: int = typer.Option(20, "--limit", min=1), server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """List peer-review rounds. Requires admin access."""
+    client = _client(server_url, token)
+    try:
+        for round_item in client.list_rounds(limit=limit):
+            typer.echo(f"{round_item['id']}\t{round_item['name']}\t{round_item['status']}\t{round_item.get('starts_at') or ''}\t{round_item.get('ends_at') or ''}")
+    finally:
+        client.close()
+
+
+@admin_rounds_app.command("open")
+def admin_rounds_open(
+    name: str = typer.Option(..., "--name", "-n"),
+    starts_at: Optional[str] = typer.Option(None, "--starts-at"),
+    ends_at: Optional[str] = typer.Option(None, "--ends-at"),
+    interval_seconds: Optional[int] = typer.Option(None, "--interval-seconds", min=1),
+    server_url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
+    """Open a peer-review round. Requires admin access."""
+    client = _client(server_url, token)
+    try:
+        round_item = client.open_round(name=name, starts_at=starts_at, ends_at=ends_at, interval_seconds=interval_seconds)
+        typer.echo(f"{round_item['id']}\t{round_item['name']}\t{round_item['status']}")
+    finally:
+        client.close()
+
+
+@admin_rounds_app.command("close")
+def admin_rounds_close(round_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Snapshot participants and queue generation jobs for a round."""
+    client = _client(server_url, token)
+    try:
+        detail = client.close_round(round_id)
+        typer.echo(_format_round_detail(detail))
+    finally:
+        client.close()
+
+
+@admin_rounds_app.command("start-peer-review")
+def admin_rounds_start_peer_review(round_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Queue cross-user peer-review jobs for a round."""
+    client = _client(server_url, token)
+    try:
+        detail = client.start_peer_review_round(round_id)
+        typer.echo(_format_round_detail(detail))
+    finally:
+        client.close()
+
+
+@admin_rounds_app.command("status")
+def admin_rounds_status(round_id: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Show round participants, job counts, and evaluation counts."""
+    client = _client(server_url, token)
+    try:
+        detail = client.get_round(round_id)
+        typer.echo(_format_round_detail(detail))
+    finally:
+        client.close()
+
+
+@admin_rounds_app.command("leaderboard")
+def admin_rounds_leaderboard(round_id: str, limit: int = typer.Option(100, "--limit", min=1), server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Show the evaluations-based leaderboard for one round."""
+    client = _client(server_url, token)
+    try:
+        for item in client.round_leaderboard(round_id, limit=limit):
+            score = "" if item.get("round_score") is None else f"{float(item['round_score']):.2f}"
+            typer.echo(f"{item['submission_id']}\t{item['submission_name']}\t{item['owner_name']}\t{score}")
+    finally:
+        client.close()
+
+
 def _timestamp() -> str:
     return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+
+
+def _format_round_detail(detail: dict) -> str:
+    jobs = detail.get("jobs") or []
+    evaluations = detail.get("evaluations") or []
+    parts = [
+        f"{detail['id']}\t{detail['name']}\t{detail['status']}",
+        f"participants={len(detail.get('participants') or [])}",
+        f"jobs={_summarize_job_statuses(jobs)}",
+        f"evaluations={_summarize_job_statuses(evaluations)}",
+    ]
+    leaderboard = detail.get("leaderboard") or []
+    if leaderboard:
+        top = leaderboard[0]
+        score = "" if top.get("round_score") is None else f"{float(top['round_score']):.2f}"
+        parts.append(f"top={top.get('submission_name')}:{score}")
+    return "  ".join(parts)
 
 
 def _local_env(agent_dir: Path, env_file: Path | None) -> dict[str, str]:

@@ -14,6 +14,7 @@ from fastapi.responses import RedirectResponse
 from .auth import authenticate, create_token, create_user, current_user
 from .db import connect, decode_json, init_db, row_to_dict
 from .llm import create_llm_message
+from .rounds import close_round, get_round_detail, list_rounds, open_round, round_leaderboard, start_peer_review
 from .schemas import AuthResponse, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
 from .settings import settings
 from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get, read_s3_file
@@ -167,7 +168,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
     with connect() as db:
         rows = db.execute(
             """
-            select id, submission_id, job_type, generator_submission_id,
+            select id, submission_id, job_type, round_id, generator_submission_id,
                    review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
                    dataset_id, task_id, status, result_json,
                    artifact_s3_prefix, preview_s3_key, generation_s3_prefix,
@@ -177,7 +178,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
                    completed_at, run_seconds, error, created_at, updated_at
             from jobs
             where (coalesce(job_type, 'generation') = 'generation' and submission_id = ?)
-               or (job_type = 'peer_review' and generator_submission_id = ?)
+               or (job_type in ('peer_review', 'peer_evaluation', 'central_evaluation') and generator_submission_id = ?)
             order by created_at desc
             """,
             (submission_id, submission_id),
@@ -225,6 +226,56 @@ def get_submission_llm_usage(submission_id: str, user: dict = Depends(current_us
             (submission_id,),
         ).fetchall()
     return {"summary": dict(summary), "jobs": [dict(row) for row in by_job]}
+
+
+@app.get("/v1/peer-reviews/rounds")
+def api_list_rounds(limit: int = 20, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    return {"items": list_rounds(limit)}
+
+
+@app.post("/v1/peer-reviews/rounds")
+def api_open_round(payload: dict, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    return open_round(
+        payload["name"],
+        starts_at=payload.get("starts_at"),
+        ends_at=payload.get("ends_at"),
+        interval_seconds=payload.get("interval_seconds"),
+    )
+
+
+@app.get("/v1/peer-reviews/rounds/{round_id}")
+def api_get_round(round_id: str, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    detail = get_round_detail(round_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Round not found")
+    return detail
+
+
+@app.post("/v1/peer-reviews/rounds/{round_id}/close")
+def api_close_round(round_id: str, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    try:
+        return close_round(round_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/v1/peer-reviews/rounds/{round_id}/start-peer-review")
+def api_start_peer_review(round_id: str, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    try:
+        return start_peer_review(round_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/v1/peer-reviews/rounds/{round_id}/leaderboard")
+def api_round_leaderboard(round_id: str, limit: int = 100, user: dict = Depends(current_user)) -> dict:
+    require_admin(user)
+    return {"items": round_leaderboard(round_id, limit)}
 
 
 @app.get("/v1/jobs/{job_id}/artifacts")

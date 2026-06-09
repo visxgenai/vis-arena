@@ -189,6 +189,38 @@ class VisArenaClient:
         )
         return LLMMessage.model_validate(response.json())
 
+    def list_rounds(self, limit: int = 20) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/peer-reviews/rounds", params={"limit": limit}).json()["items"]
+
+    def open_round(
+        self,
+        *,
+        name: str,
+        starts_at: str | None = None,
+        ends_at: str | None = None,
+        interval_seconds: int | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"name": name}
+        if starts_at:
+            payload["starts_at"] = starts_at
+        if ends_at:
+            payload["ends_at"] = ends_at
+        if interval_seconds:
+            payload["interval_seconds"] = interval_seconds
+        return self._request("POST", "/v1/peer-reviews/rounds", json=payload).json()
+
+    def get_round(self, round_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/peer-reviews/rounds/{round_id}").json()
+
+    def close_round(self, round_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/peer-reviews/rounds/{round_id}/close").json()
+
+    def start_peer_review_round(self, round_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/v1/peer-reviews/rounds/{round_id}/start-peer-review").json()
+
+    def round_leaderboard(self, round_id: str, limit: int = 100) -> list[dict[str, Any]]:
+        return self._request("GET", f"/v1/peer-reviews/rounds/{round_id}/leaderboard", params={"limit": limit}).json()["items"]
+
 
 @contextmanager
 def _as_zip(path_like: str | Path):
