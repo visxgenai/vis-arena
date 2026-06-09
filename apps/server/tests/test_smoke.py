@@ -132,10 +132,11 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
               artifact_s3_prefix, preview_s3_key, generation_s3_prefix,
               evaluation_s3_prefix, agent_info_s3_key,
               generation_trajectory_s3_key, evaluation_trajectory_s3_key,
+              generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
               evaluation_report_s3_key, started_at, completed_at,
               run_seconds, created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -151,6 +152,8 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
                 f"jobs/{job_id}/generation/agent-info.json",
                 f"jobs/{job_id}/generation/trajectory.jsonl",
                 f"jobs/{job_id}/evaluation/trajectory.jsonl",
+                f"jobs/{job_id}/generation/agent-trajectory.jsonl",
+                f"jobs/{job_id}/evaluation/agent-trajectory.jsonl",
                 f"jobs/{job_id}/evaluation/report.json",
                 "2026-06-01T00:00:01+00:00",
                 "2026-06-01T00:00:04+00:00",
@@ -168,6 +171,8 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
     assert item["agent_info_s3_key"] == f"jobs/{job_id}/generation/agent-info.json"
     assert item["generation_trajectory_s3_key"] == f"jobs/{job_id}/generation/trajectory.jsonl"
     assert item["evaluation_trajectory_s3_key"] == f"jobs/{job_id}/evaluation/trajectory.jsonl"
+    assert item["generation_agent_trajectory_s3_key"] == f"jobs/{job_id}/generation/agent-trajectory.jsonl"
+    assert item["evaluation_agent_trajectory_s3_key"] == f"jobs/{job_id}/evaluation/agent-trajectory.jsonl"
     assert item["evaluation_report_s3_key"] == f"jobs/{job_id}/evaluation/report.json"
     assert item["run_seconds"] == 3.0
     assert item["result"] == {"score": 0.75}
@@ -176,6 +181,7 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
 
 def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) -> None:
     from vis_arena_server import evaluator
+    from vis_arena_server.trajectory import broker_trajectory_path
 
     reports_dir = tmp_path / "reports"
     work_dir = tmp_path / "work"
@@ -189,6 +195,11 @@ def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) 
     (reports_dir / "evaluation" / "runtime.log").write_text("evaluation log", encoding="utf-8")
     (reports_dir / "evaluation" / "trajectory.jsonl").write_text('{"phase":"evaluation"}\n', encoding="utf-8")
     (work_dir / "evaluate" / "evaluation.json").write_text('{"score":1}', encoding="utf-8")
+    generation_agent_trajectory = broker_trajectory_path("job-123", "generation")
+    evaluation_agent_trajectory = broker_trajectory_path("job-123", "evaluation")
+    generation_agent_trajectory.parent.mkdir(parents=True, exist_ok=True)
+    generation_agent_trajectory.write_text('{"type":"tool_call"}\n', encoding="utf-8")
+    evaluation_agent_trajectory.write_text('{"type":"tool_response"}\n', encoding="utf-8")
 
     uploads: list[tuple[Path, str, str]] = []
     monkeypatch.setattr(evaluator, "upload_s3_file", lambda path, key, content_type: uploads.append((path, key, content_type)))
@@ -201,16 +212,70 @@ def test_upload_runtime_files_uses_phase_s3_layout(tmp_path: Path, monkeypatch) 
         "agent_info_s3_key": "jobs/job-123/generation/agent-info.json",
         "generation_trajectory_s3_key": "jobs/job-123/generation/trajectory.jsonl",
         "evaluation_trajectory_s3_key": "jobs/job-123/evaluation/trajectory.jsonl",
+        "generation_agent_trajectory_s3_key": "jobs/job-123/generation/agent-trajectory.jsonl",
+        "evaluation_agent_trajectory_s3_key": "jobs/job-123/evaluation/agent-trajectory.jsonl",
         "evaluation_report_s3_key": "jobs/job-123/evaluation/report.json",
     }
     assert [(key, content_type) for _path, key, content_type in uploads] == [
         ("jobs/job-123/generation/runtime.log", "text/plain"),
         ("jobs/job-123/generation/trajectory.jsonl", "application/x-ndjson"),
+        ("jobs/job-123/generation/agent-trajectory.jsonl", "application/x-ndjson"),
         ("jobs/job-123/generation/agent-info.json", "application/json"),
         ("jobs/job-123/evaluation/runtime.log", "text/plain"),
         ("jobs/job-123/evaluation/trajectory.jsonl", "application/x-ndjson"),
+        ("jobs/job-123/evaluation/agent-trajectory.jsonl", "application/x-ndjson"),
         ("jobs/job-123/evaluation/report.json", "application/json"),
     ]
+
+
+def test_broker_trajectory_records_tool_calls_and_responses() -> None:
+    from vis_arena_server.llm import _record_llm_request_trajectory, _record_llm_response_trajectory
+    from vis_arena_server.schemas import LLMMessageRequest
+    from vis_arena_server.trajectory import broker_trajectory_path
+
+    job_id = f"job-{uuid.uuid4()}"
+    payload = LLMMessageRequest(
+        job_id=job_id,
+        purpose="generation",
+        model="model-a",
+        tools=[{"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}}],
+        messages=[
+            {"role": "user", "content": "make a chart"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call-1", "type": "function", "function": {"name": "bash", "arguments": '{"command":"ls"}'}}
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "file.csv\n"},
+        ],
+    )
+    context = {"submission_id": "submission-1"}
+
+    _record_llm_request_trajectory(payload, context, "model-a", 4096, 1000000)
+    _record_llm_response_trajectory(
+        payload,
+        {
+            "model": "model-a",
+            "message": {
+                "role": "assistant",
+                "content": "I will inspect the data.",
+                "tool_calls": [
+                    {"id": "call-2", "type": "function", "function": {"name": "bash", "arguments": '{"command":"cat file.csv"}'}}
+                ],
+            },
+            "usage": {"input_tokens": 12, "output_tokens": 8, "total_tokens": 20},
+        },
+        123,
+    )
+
+    events = [json.loads(line) for line in broker_trajectory_path(job_id, "generation").read_text(encoding="utf-8").splitlines()]
+    assert [event["type"] for event in events] == ["llm_request", "tool_response", "llm_response", "tool_call"]
+    assert events[1]["tool"] == "bash"
+    assert events[1]["content_preview"] == "file.csv\n"
+    assert events[3]["tool"] == "bash"
+    assert events[3]["arguments"] == {"command": "cat file.csv"}
 
 
 def test_generation_artifacts_zip_excludes_task_data(tmp_path: Path) -> None:

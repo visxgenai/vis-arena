@@ -76,6 +76,8 @@ def init_db() -> None:
               agent_info_s3_key text,
               generation_trajectory_s3_key text,
               evaluation_trajectory_s3_key text,
+              generation_agent_trajectory_s3_key text,
+              evaluation_agent_trajectory_s3_key text,
               evaluation_report_s3_key text,
               error text,
               started_at text,
@@ -161,6 +163,8 @@ def init_db() -> None:
         _add_column(db, "jobs", "agent_info_s3_key text")
         _add_column(db, "jobs", "generation_trajectory_s3_key text")
         _add_column(db, "jobs", "evaluation_trajectory_s3_key text")
+        _add_column(db, "jobs", "generation_agent_trajectory_s3_key text")
+        _add_column(db, "jobs", "evaluation_agent_trajectory_s3_key text")
         _add_column(db, "jobs", "evaluation_report_s3_key text")
         _add_column(db, "jobs", "error text")
         _add_column(db, "jobs", "started_at text")

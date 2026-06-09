@@ -174,6 +174,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
                    artifact_s3_prefix, preview_s3_key, generation_s3_prefix,
                    evaluation_s3_prefix, agent_info_s3_key,
                    generation_trajectory_s3_key, evaluation_trajectory_s3_key,
+                   generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
                    evaluation_report_s3_key, started_at,
                    completed_at, run_seconds, error, created_at, updated_at
             from jobs

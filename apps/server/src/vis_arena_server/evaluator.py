@@ -25,6 +25,7 @@ from .rounds import (
 )
 from .settings import settings
 from .storage import copy_task_data, download_s3, make_zip, safe_extract_zip, upload_s3_directory, upload_s3_file
+from .trajectory import broker_trajectory_path
 
 
 def run() -> None:
@@ -429,6 +430,8 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
     agent_info_s3_key = None
     generation_trajectory_s3_key = None
     evaluation_trajectory_s3_key = None
+    generation_agent_trajectory_s3_key = None
+    evaluation_agent_trajectory_s3_key = None
     evaluation_report_s3_key = None
 
     generation_log = reports_dir / "generation" / "runtime.log"
@@ -439,6 +442,11 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
     if generation_trajectory.exists():
         generation_trajectory_s3_key = f"{generation_s3_prefix}/trajectory.jsonl"
         upload_s3_file(generation_trajectory, generation_trajectory_s3_key, "application/x-ndjson")
+
+    generation_agent_trajectory = broker_trajectory_path(job_id, "generation")
+    if generation_agent_trajectory.exists():
+        generation_agent_trajectory_s3_key = f"{generation_s3_prefix}/agent-trajectory.jsonl"
+        upload_s3_file(generation_agent_trajectory, generation_agent_trajectory_s3_key, "application/x-ndjson")
 
     agent_info = reports_dir / "generation" / "agent-info.json"
     if agent_info.exists():
@@ -454,6 +462,11 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
         evaluation_trajectory_s3_key = f"{evaluation_s3_prefix}/trajectory.jsonl"
         upload_s3_file(evaluation_trajectory, evaluation_trajectory_s3_key, "application/x-ndjson")
 
+    evaluation_agent_trajectory = broker_trajectory_path(job_id, "evaluation")
+    if evaluation_agent_trajectory.exists():
+        evaluation_agent_trajectory_s3_key = f"{evaluation_s3_prefix}/agent-trajectory.jsonl"
+        upload_s3_file(evaluation_agent_trajectory, evaluation_agent_trajectory_s3_key, "application/x-ndjson")
+
     evaluation_report = work_dir / "evaluate" / "evaluation.json"
     if evaluation_report.exists():
         evaluation_report_s3_key = f"{evaluation_s3_prefix}/report.json"
@@ -465,6 +478,8 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
         "agent_info_s3_key": agent_info_s3_key,
         "generation_trajectory_s3_key": generation_trajectory_s3_key,
         "evaluation_trajectory_s3_key": evaluation_trajectory_s3_key,
+        "generation_agent_trajectory_s3_key": generation_agent_trajectory_s3_key,
+        "evaluation_agent_trajectory_s3_key": evaluation_agent_trajectory_s3_key,
         "evaluation_report_s3_key": evaluation_report_s3_key,
     }
 
@@ -751,7 +766,8 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
             set status = ?, result_json = ?, artifact_s3_prefix = ?, preview_s3_key = ?,
                 generation_s3_prefix = ?, evaluation_s3_prefix = ?,
                 agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
-                evaluation_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
+                evaluation_trajectory_s3_key = ?, generation_agent_trajectory_s3_key = ?,
+                evaluation_agent_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
                 started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
             where id = ?
             """,
@@ -765,6 +781,8 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
                 result.get("agent_info_s3_key"),
                 result.get("generation_trajectory_s3_key"),
                 result.get("evaluation_trajectory_s3_key"),
+                result.get("generation_agent_trajectory_s3_key"),
+                result.get("evaluation_agent_trajectory_s3_key"),
                 result.get("evaluation_report_s3_key"),
                 result.get("started_at"),
                 result.get("completed_at"),
@@ -796,7 +814,8 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
             update jobs
             set generation_s3_prefix = ?, evaluation_s3_prefix = ?,
                 agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
-                evaluation_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
+                evaluation_trajectory_s3_key = ?, generation_agent_trajectory_s3_key = ?,
+                evaluation_agent_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
                 started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
             where id = ?
             """,
@@ -806,6 +825,8 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
                 runtime_files["agent_info_s3_key"],
                 runtime_files["generation_trajectory_s3_key"],
                 runtime_files["evaluation_trajectory_s3_key"],
+                runtime_files["generation_agent_trajectory_s3_key"],
+                runtime_files["evaluation_agent_trajectory_s3_key"],
                 runtime_files["evaluation_report_s3_key"],
                 runtime["started_at"],
                 runtime["completed_at"],

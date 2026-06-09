@@ -12,6 +12,10 @@ from fastapi import HTTPException
 from .db import connect, now_iso, row_to_dict
 from .schemas import LLMMessageRequest
 from .settings import settings
+from .trajectory import append_broker_event, stable_event_key
+
+
+MAX_TRAJECTORY_VALUE_CHARS = 4000
 
 
 def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, Any]:
@@ -30,8 +34,23 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
 
     remaining_tokens = settings.llm_max_tokens_per_submission - used_tokens
     max_tokens = max(1, min(payload.max_tokens, remaining_tokens))
+    model_id = _resolve_bedrock_model(payload.model)
+    _record_llm_request_trajectory(payload, context, model_id, max_tokens, remaining_tokens)
     started = time.monotonic()
-    bedrock = _invoke_bedrock(payload, max_tokens)
+    try:
+        bedrock = _invoke_bedrock(payload, max_tokens, model_id)
+    except HTTPException as exc:
+        append_broker_event(
+            payload.job_id,
+            payload.purpose,
+            {
+                "type": "llm_error",
+                "provider": "bedrock",
+                "model": model_id,
+                "detail": str(exc.detail),
+            },
+        )
+        raise
     latency_ms = int((time.monotonic() - started) * 1000)
 
     usage = bedrock["usage"]
@@ -50,6 +69,7 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
         estimated_cost_usd=estimated_cost,
         latency_ms=latency_ms,
     )
+    _record_llm_response_trajectory(payload, bedrock, latency_ms)
 
     return {
         "provider": "bedrock",
@@ -84,8 +104,7 @@ def _submission_token_total(submission_id: str) -> int:
     return int(row["total"] or 0)
 
 
-def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int) -> dict[str, Any]:
-    model_id = _resolve_bedrock_model(payload.model)
+def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int, model_id: str) -> dict[str, Any]:
     body = _anthropic_body(payload.messages, payload.tools, payload.tool_choice, max_tokens)
     client = boto3.client("bedrock-runtime", region_name=settings.bedrock_region)
     try:
@@ -272,3 +291,114 @@ def _estimated_cost_usd(input_tokens: int, output_tokens: int) -> float | None:
     if settings.llm_input_usd_per_1m <= 0 and settings.llm_output_usd_per_1m <= 0:
         return None
     return (input_tokens / 1_000_000 * settings.llm_input_usd_per_1m) + (output_tokens / 1_000_000 * settings.llm_output_usd_per_1m)
+
+
+def _record_llm_request_trajectory(payload: LLMMessageRequest, context: dict[str, Any], model_id: str, max_tokens: int, remaining_tokens: int) -> None:
+    tool_names = [_tool_name(tool) for tool in payload.tools]
+    append_broker_event(
+        payload.job_id,
+        payload.purpose,
+        {
+            "type": "llm_request",
+            "provider": "bedrock",
+            "model": model_id,
+            "submission_id": context["submission_id"],
+            "purpose": payload.purpose,
+            "message_count": len(payload.messages),
+            "tool_names": [name for name in tool_names if name],
+            "tool_choice": _truncate(payload.tool_choice),
+            "max_tokens": max_tokens,
+            "remaining_submission_tokens_before": remaining_tokens,
+        },
+    )
+
+    call_names = _tool_call_names_by_id(payload.messages)
+    for message in payload.messages:
+        if message.get("role") != "tool":
+            continue
+        tool_call_id = str(message.get("tool_call_id") or "")
+        content = str(message.get("content") or "")
+        append_broker_event(
+            payload.job_id,
+            payload.purpose,
+            {
+                "type": "tool_response",
+                "tool_call_id": tool_call_id or None,
+                "tool": call_names.get(tool_call_id),
+                "content_preview": _preview(content),
+                "content_chars": len(content),
+            },
+            dedupe_key=stable_event_key("tool_response", payload.job_id, payload.purpose, tool_call_id, content),
+        )
+
+
+def _record_llm_response_trajectory(payload: LLMMessageRequest, bedrock: dict[str, Any], latency_ms: int) -> None:
+    message = bedrock["message"]
+    usage = bedrock["usage"]
+    content = message.get("content") or ""
+    append_broker_event(
+        payload.job_id,
+        payload.purpose,
+        {
+            "type": "llm_response",
+            "provider": "bedrock",
+            "model": bedrock["model"],
+            "content_preview": _preview(str(content)),
+            "content_chars": len(str(content)),
+            "tool_call_count": len(message.get("tool_calls") or []),
+            "usage": usage,
+            "latency_ms": latency_ms,
+        },
+    )
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        raw_arguments = function.get("arguments") or "{}"
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError:
+            arguments = raw_arguments
+        append_broker_event(
+            payload.job_id,
+            payload.purpose,
+            {
+                "type": "tool_call",
+                "tool_call_id": call.get("id"),
+                "tool": function.get("name"),
+                "arguments": _truncate(arguments),
+            },
+        )
+
+
+def _tool_call_names_by_id(messages: list[dict[str, Any]]) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for message in messages:
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            call_id = call.get("id")
+            function = call.get("function") or {}
+            if call_id and function.get("name"):
+                names[str(call_id)] = str(function["name"])
+    return names
+
+
+def _tool_name(tool: dict[str, Any]) -> str | None:
+    function = tool.get("function") or tool
+    name = function.get("name")
+    return str(name) if name else None
+
+
+def _preview(value: str) -> str:
+    if len(value) <= MAX_TRAJECTORY_VALUE_CHARS:
+        return value
+    return value[:MAX_TRAJECTORY_VALUE_CHARS] + "...[truncated]"
+
+
+def _truncate(value: Any) -> Any:
+    if isinstance(value, str):
+        return _preview(value)
+    if isinstance(value, list):
+        return [_truncate(item) for item in value[:50]]
+    if isinstance(value, dict):
+        return {str(key): _truncate(item) for key, item in list(value.items())[:50]}
+    return value
