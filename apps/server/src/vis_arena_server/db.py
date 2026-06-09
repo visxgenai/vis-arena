@@ -141,13 +141,6 @@ def init_db() -> None:
               completed_at text,
               updated_at text not null
             );
-            create index if not exists idx_jobs_round_type on jobs(round_id, job_type);
-            create index if not exists idx_evaluations_round_artifact on evaluations(round_id, artifact_job_id);
-            create index if not exists idx_evaluations_evaluator_sub on evaluations(evaluator_submission_id);
-            create index if not exists idx_round_participants_user on round_participants(user_id);
-            create unique index if not exists idx_evaluations_unique on evaluations(
-              round_id, artifact_job_id, evaluator_type, evaluator_submission_id
-            );
             """
         )
         _add_column(db, "datasets", "s3_key text")
@@ -173,6 +166,17 @@ def init_db() -> None:
         _add_column(db, "jobs", "started_at text")
         _add_column(db, "jobs", "completed_at text")
         _add_column(db, "jobs", "run_seconds real")
+        db.executescript(
+            """
+            create index if not exists idx_jobs_round_type on jobs(round_id, job_type);
+            create index if not exists idx_evaluations_round_artifact on evaluations(round_id, artifact_job_id);
+            create index if not exists idx_evaluations_evaluator_sub on evaluations(evaluator_submission_id);
+            create index if not exists idx_round_participants_user on round_participants(user_id);
+            create unique index if not exists idx_evaluations_unique on evaluations(
+              round_id, artifact_job_id, evaluator_type, evaluator_submission_id
+            );
+            """
+        )
 
 
 @contextmanager
