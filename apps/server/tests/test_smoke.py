@@ -70,6 +70,17 @@ def test_register_login_me_submissions(client: TestClient) -> None:
     assert me["email"] == email
     assert me["name"] == name
 
+    # --- PATCH /v1/me ---
+    res = client.patch("/v1/me", headers=auth, json={"name": "Updated Smoke User"})
+    assert res.status_code == 200, res.text
+    updated = res.json()
+    assert updated["email"] == email
+    assert updated["name"] == "Updated Smoke User"
+
+    res = client.get("/v1/me", headers=auth)
+    assert res.status_code == 200, res.text
+    assert res.json()["name"] == "Updated Smoke User"
+
     # --- /v1/submissions (empty for a brand-new user) ---
     res = client.get("/v1/submissions", headers=auth)
     assert res.status_code == 200, res.text

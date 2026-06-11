@@ -45,6 +45,17 @@ def test_login_round_trip_and_me(sdk_client: VisArenaClient) -> None:
         fresh.close()
 
 
+def test_update_me_changes_display_name(sdk_client: VisArenaClient) -> None:
+    email = _unique_email()
+    sdk_client.register(email, "pw1234567890", "Original Name")
+
+    updated = sdk_client.update_me("Seed User 2")
+
+    assert updated["email"] == email
+    assert updated["name"] == "Seed User 2"
+    assert sdk_client.me()["name"] == "Seed User 2"
+
+
 def test_list_submissions_empty_for_new_user(sdk_client: VisArenaClient) -> None:
     sdk_client.register(_unique_email(), "anotherpw1234", None)
     assert sdk_client.list_submissions() == []

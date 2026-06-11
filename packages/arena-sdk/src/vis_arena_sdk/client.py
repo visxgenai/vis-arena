@@ -33,7 +33,7 @@ class VisArenaError(RuntimeError):
 
 
 class VisArenaClient:
-    def __init__(self, base_url: str = "http://localhost:8000", token: str | None = None, timeout: float = 60.0):
+    def __init__(self, base_url: str = "https://visagent.org", token: str | None = None, timeout: float = 60.0):
         self.base_url = base_url.rstrip("/")
         self.token = token
         self.timeout = timeout
@@ -67,6 +67,9 @@ class VisArenaClient:
 
     def me(self) -> dict[str, Any]:
         return self._request("GET", "/v1/me").json()
+
+    def update_me(self, name: str) -> dict[str, Any]:
+        return self._request("PATCH", "/v1/me", json={"name": name}).json()
 
     def version(self) -> dict[str, Any]:
         return self._request("GET", "/v1/version").json()

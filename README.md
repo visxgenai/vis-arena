@@ -23,7 +23,8 @@ docs/peer_review_arena.md     Peer-review queue lifecycle
 ```bash
 uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
 
-vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
+vis-arena register you@example.com 'your-password' --server-url https://visagent.org
+vis-arena profile set-name "Your Display Name"
 vis-arena init my-agent && cd my-agent
 
 cat > .env <<'EOF'
@@ -36,7 +37,8 @@ vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
 
-`--name` is the submission name shown in participant views and the leaderboard.
+`profile set-name` controls your participant display name. Submission `--name`
+is the agent/version label shown under your participant entry.
 Cloud submissions run against every active public dataset.
 Local runs use the participant's own `OPENAI_API_KEY`. Cloud submissions use
 arena-provided LLM access; do not package API keys in a submission.

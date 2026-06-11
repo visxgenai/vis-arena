@@ -53,6 +53,19 @@ def authenticate(email: str, password: str) -> dict | None:
     return {"id": row["id"], "email": row["email"], "name": row["name"], "created_at": row["created_at"]}
 
 
+def update_user_name(user_id: str, name: str) -> dict:
+    display_name = name.strip()
+    if not display_name:
+        raise HTTPException(status_code=422, detail="Display name cannot be empty")
+    with connect() as db:
+        db.execute("update users set name = ? where id = ?", (display_name, user_id))
+        row = db.execute("select id, email, name, created_at from users where id = ?", (user_id,)).fetchone()
+    user = row_to_dict(row)
+    if not user:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    return user
+
+
 def current_user(credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer)]) -> dict:
     try:
         payload = jwt.decode(credentials.credentials, settings.secret_key, algorithms=["HS256"])
@@ -65,4 +78,3 @@ def current_user(credentials: Annotated[HTTPAuthorizationCredentials, Depends(be
     if not user:
         raise HTTPException(status_code=401, detail="Unknown user")
     return user
-

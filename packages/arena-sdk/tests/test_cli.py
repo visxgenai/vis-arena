@@ -61,6 +61,21 @@ def test_login_overwrites_stored_token(fresh_config) -> None:
     assert second_token, "config should still hold a token after login"
 
 
+def test_profile_set_name_updates_display_name(fresh_config) -> None:
+    email = _unique_email()
+    register_result = runner.invoke(app, ["register", email, "pw1234567890", "--name", "Original User"])
+    assert register_result.exit_code == 0, register_result.output
+
+    result = runner.invoke(app, ["profile", "set-name", "Seed User 2"])
+    assert result.exit_code == 0, result.output
+    assert f"Updated profile: Seed User 2 <{email}>" in result.output
+
+    result = runner.invoke(app, ["profile"])
+    assert result.exit_code == 0, result.output
+    assert email in result.output
+    assert "Seed User 2" in result.output
+
+
 def test_env_token_beats_config_file(fresh_config, monkeypatch) -> None:
     """VIS_ARENA_API_TOKEN must take precedence over the config file."""
     email = _unique_email()

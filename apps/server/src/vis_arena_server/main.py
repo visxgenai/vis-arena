@@ -12,11 +12,11 @@ from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .auth import authenticate, create_token, create_user, current_user
+from .auth import authenticate, create_token, create_user, current_user, update_user_name
 from .db import connect, decode_json, init_db, row_to_dict
 from .llm import create_llm_message
 from .rounds import close_round, get_round_detail, list_rounds, open_round, round_leaderboard, start_peer_review
-from .schemas import AuthResponse, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest
+from .schemas import AuthResponse, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest, UpdateMeRequest, UserResponse
 from .settings import settings
 from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get, read_s3_file
 
@@ -83,9 +83,14 @@ def login(payload: LoginRequest) -> dict:
     return {"access_token": create_token(user["id"]), "token_type": "bearer", "user": user}
 
 
-@app.get("/v1/me")
+@app.get("/v1/me", response_model=UserResponse)
 def me(user: dict = Depends(current_user)) -> dict:
     return user
+
+
+@app.patch("/v1/me", response_model=UserResponse)
+def update_me(payload: UpdateMeRequest, user: dict = Depends(current_user)) -> dict:
+    return update_user_name(user["id"], payload.name)
 
 
 @app.get("/v1/datasets")

@@ -29,6 +29,7 @@ submissions_app = typer.Typer(help="Submission commands")
 results_app = typer.Typer(help="Result commands")
 local_app = typer.Typer(help="Local agent development commands")
 llm_app = typer.Typer(help="Cloud LLM token commands")
+profile_app = typer.Typer(help="Profile commands", invoke_without_command=True)
 admin_app = typer.Typer(help="Admin commands")
 admin_rounds_app = typer.Typer(help="Peer-review round admin commands")
 app.add_typer(datasets_app, name="datasets")
@@ -36,6 +37,7 @@ app.add_typer(submissions_app, name="submissions")
 app.add_typer(results_app, name="results")
 app.add_typer(local_app, name="local")
 app.add_typer(llm_app, name="llm")
+app.add_typer(profile_app, name="profile")
 app.add_typer(admin_app, name="admin")
 admin_app.add_typer(admin_rounds_app, name="rounds")
 
@@ -154,6 +156,50 @@ def whoami(server_url: Optional[str] = None, token: Optional[str] = None) -> Non
     try:
         _check_cli_version(client, enforce_minimum=True)
         typer.echo(client.me())
+    finally:
+        client.close()
+
+
+def _format_user(user: dict) -> str:
+    return f"{user.get('id')}\t{user.get('email')}\t{user.get('name') or ''}"
+
+
+@profile_app.callback(invoke_without_command=True)
+def profile(
+    ctx: typer.Context,
+    server_url: Optional[str] = None,
+    token: Optional[str] = None,
+) -> None:
+    """Show the authenticated user's profile."""
+    if ctx.invoked_subcommand is not None:
+        return
+    client = _client(server_url, token)
+    try:
+        _check_cli_version(client, enforce_minimum=True)
+        typer.echo(_format_user(client.me()))
+    finally:
+        client.close()
+
+
+@profile_app.command("show")
+def profile_show(server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Show the authenticated user's profile."""
+    client = _client(server_url, token)
+    try:
+        _check_cli_version(client, enforce_minimum=True)
+        typer.echo(_format_user(client.me()))
+    finally:
+        client.close()
+
+
+@profile_app.command("set-name")
+def profile_set_name(name: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
+    """Update the display name shown on the leaderboard."""
+    client = _client(server_url, token)
+    try:
+        _check_cli_version(client, enforce_minimum=True)
+        user = client.update_me(name)
+        typer.echo(f"Updated profile: {user['name']} <{user['email']}>")
     finally:
         client.close()
 

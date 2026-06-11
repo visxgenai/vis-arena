@@ -6,7 +6,8 @@ Python client and CLI for Vis Arena.
 uv tool install "git+https://github.com/visxgenai/vis-arena#subdirectory=packages/arena-sdk"
 
 vis-arena init my-agent && cd my-agent
-vis-arena register you@example.com 'your-password' --server-url http://44.248.40.235:8000
+vis-arena register you@example.com 'your-password' --server-url https://visagent.org
+vis-arena profile set-name "Your Display Name"
 vis-arena datasets list
 printf 'OPENAI_API_KEY=sk-...\n' > .env
 vis-arena local run . --dataset monthly-sales
@@ -14,6 +15,9 @@ vis-arena submit . --name "my-agent-v1"   # --name shows on the leaderboard
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>
 ```
+
+`profile set-name` controls your participant display name. Submission `--name`
+is the agent/version label shown under your participant entry.
 
 `local run` uses one dataset for preflight. `submit` runs against every active
 public dataset on the arena server.

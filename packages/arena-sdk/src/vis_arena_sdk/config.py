@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SERVER_URL = "http://localhost:8000"
+DEFAULT_SERVER_URL = "https://visagent.org"
 CONFIG_DIR = Path(os.environ.get("VIS_ARENA_CONFIG_DIR", Path.home() / ".config" / "vis-arena"))
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
@@ -36,4 +36,3 @@ def resolve_token(explicit: str | None = None) -> str | None:
         return os.environ["VIS_ARENA_API_TOKEN"]
     token = load_config().get("access_token")
     return str(token) if token else None
-
