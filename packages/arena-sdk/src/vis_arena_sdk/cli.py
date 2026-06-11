@@ -14,14 +14,14 @@ import zipfile
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from importlib import resources
-from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Optional
 
 import typer
 
+from .commands.account import register_account_commands
 from .client import VisArenaClient, VisArenaError
-from .config import load_config, resolve_server_url, resolve_token, save_config
+from .cli_runtime import _check_cli_version, _client
 
 app = typer.Typer(help="Vis Arena command line client")
 datasets_app = typer.Typer(help="Dataset commands")
@@ -40,6 +40,7 @@ app.add_typer(llm_app, name="llm")
 app.add_typer(profile_app, name="profile")
 app.add_typer(admin_app, name="admin")
 admin_app.add_typer(admin_rounds_app, name="rounds")
+register_account_commands(app, profile_app)
 
 
 @app.command()
@@ -65,166 +66,6 @@ def init(
     typer.echo(f"Scaffolded agent template in {directory}")
     typer.echo(f"  Next: cd {directory}")
     typer.echo("        edit agent.py, then test locally with your OPENAI_API_KEY")
-
-
-def _client(server_url: str | None = None, token: str | None = None) -> VisArenaClient:
-    return VisArenaClient(base_url=resolve_server_url(server_url), token=resolve_token(token))
-
-
-def _cli_version() -> str:
-    try:
-        return package_version("vis-arena-sdk")
-    except PackageNotFoundError:
-        return "0.0.0"
-
-
-def _version_tuple(value: str) -> tuple[int, ...]:
-    parts: list[int] = []
-    for part in value.split("."):
-        digits = ""
-        for char in part:
-            if not char.isdigit():
-                break
-            digits += char
-        parts.append(int(digits or "0"))
-    return tuple(parts)
-
-
-def _is_less_than(left: str, right: str) -> bool:
-    left_parts = _version_tuple(left)
-    right_parts = _version_tuple(right)
-    max_len = max(len(left_parts), len(right_parts))
-    return left_parts + (0,) * (max_len - len(left_parts)) < right_parts + (0,) * (max_len - len(right_parts))
-
-
-def _check_cli_version(client: VisArenaClient, *, enforce_minimum: bool = False) -> None:
-    try:
-        remote = client.version()
-    except VisArenaError:
-        return
-    current = _cli_version()
-    latest = str(remote.get("latest_cli_version") or "")
-    minimum = str(remote.get("minimum_cli_version") or "")
-    update_command = str(remote.get("update_command") or "")
-    if minimum and _is_less_than(current, minimum):
-        typer.echo(
-            f"Vis Arena CLI {current} is no longer supported. Please update to {minimum} or newer.",
-            err=True,
-        )
-        if update_command:
-            typer.echo(f"Update with:\n{update_command}", err=True)
-        if enforce_minimum:
-            raise typer.Exit(2)
-    elif latest and _is_less_than(current, latest):
-        typer.echo(f"Update available: Vis Arena CLI {current} -> {latest}", err=True)
-        if update_command:
-            typer.echo(f"Update with:\n{update_command}", err=True)
-
-
-@app.command()
-def register(email: str, password: str, name: Optional[str] = None, server_url: Optional[str] = None) -> None:
-    """Create an arena account and store the API token."""
-    client = _client(server_url, None)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        auth = client.register(email, password, name)
-    finally:
-        client.close()
-    config = load_config() | {"server_url": resolve_server_url(server_url), "access_token": auth.access_token}
-    save_config(config)
-    typer.echo(f"Registered {auth.user.email}")
-
-
-@app.command()
-def login(email: str, password: str, server_url: Optional[str] = None) -> None:
-    """Log in and store the API token."""
-    client = _client(server_url, None)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        auth = client.login(email, password)
-    finally:
-        client.close()
-    config = load_config() | {"server_url": resolve_server_url(server_url), "access_token": auth.access_token}
-    save_config(config)
-    typer.echo(f"Logged in as {auth.user.email}")
-
-
-@app.command()
-def whoami(server_url: Optional[str] = None, token: Optional[str] = None) -> None:
-    """Show the authenticated user."""
-    client = _client(server_url, token)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        typer.echo(client.me())
-    finally:
-        client.close()
-
-
-def _format_user(user: dict) -> str:
-    return f"{user.get('id')}\t{user.get('email')}\t{user.get('name') or ''}"
-
-
-@profile_app.callback(invoke_without_command=True)
-def profile(
-    ctx: typer.Context,
-    server_url: Optional[str] = None,
-    token: Optional[str] = None,
-) -> None:
-    """Show the authenticated user's profile."""
-    if ctx.invoked_subcommand is not None:
-        return
-    client = _client(server_url, token)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        typer.echo(_format_user(client.me()))
-    finally:
-        client.close()
-
-
-@profile_app.command("show")
-def profile_show(server_url: Optional[str] = None, token: Optional[str] = None) -> None:
-    """Show the authenticated user's profile."""
-    client = _client(server_url, token)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        typer.echo(_format_user(client.me()))
-    finally:
-        client.close()
-
-
-@profile_app.command("set-name")
-def profile_set_name(name: str, server_url: Optional[str] = None, token: Optional[str] = None) -> None:
-    """Update the display name shown on the leaderboard."""
-    client = _client(server_url, token)
-    try:
-        _check_cli_version(client, enforce_minimum=True)
-        user = client.update_me(name)
-        typer.echo(f"Updated profile: {user['name']} <{user['email']}>")
-    finally:
-        client.close()
-
-
-@app.command()
-def version(server_url: Optional[str] = None) -> None:
-    """Show CLI and server version information."""
-    client = VisArenaClient(base_url=resolve_server_url(server_url))
-    try:
-        typer.echo(f"CLI: {_cli_version()}")
-        try:
-            remote = client.version()
-        except VisArenaError as exc:
-            typer.echo(f"Server version unavailable: {exc}", err=True)
-            raise typer.Exit(1) from exc
-        typer.echo(f"Server: {remote.get('server_version', 'unknown')}")
-        latest = remote.get("latest_cli_version")
-        minimum = remote.get("minimum_cli_version")
-        if latest:
-            typer.echo(f"Latest CLI: {latest}")
-        if minimum:
-            typer.echo(f"Minimum CLI: {minimum}")
-        _check_cli_version(client)
-    finally:
-        client.close()
 
 
 @app.command()
