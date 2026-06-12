@@ -802,7 +802,7 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
         if job_type == "generation":
             write_self_evaluation_for_generation(db, job, result, now)
             queue_central_evaluation_for_generation(db, job_id, now)
-            if not job.get("round_id") and not settings.rounds_enabled:
+            if not job.get("round_id") and settings.legacy_peer_review_enabled:
                 queue_peer_reviews_for_generation(db, job_id, now)
         elif job_type in EVALUATION_JOB_TYPES:
             write_evaluation_job_result(db, job, result, now)

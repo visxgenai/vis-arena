@@ -11,10 +11,14 @@ from fastapi.testclient import TestClient
 
 from vis_arena_server import evaluator, rounds, storage
 from vis_arena_server.db import connect, init_db, now_iso
+from vis_arena_server.settings import settings
 
 
 @pytest.fixture(autouse=True)
 def _clean_db() -> None:
+    settings.legacy_peer_review_enabled = False
+    settings.rounds_enabled = False
+    settings.auto_start_peer_review = False
     init_db()
     with connect() as db:
         for table in ("llm_usage", "evaluations", "round_participants", "jobs", "review_rounds", "tasks", "submissions", "datasets", "users"):
@@ -161,6 +165,7 @@ def test_generation_completion_stores_phase_and_self_evaluation_runtime() -> Non
     with connect() as db:
         job = db.execute("select run_seconds, generation_run_seconds, self_evaluation_run_seconds from jobs where id = ?", (job_id,)).fetchone()
         evaluation = db.execute("select evaluator_type, run_seconds from evaluations where artifact_job_id = ? and evaluator_type = 'self'", (job_id,)).fetchone()
+        peer_count = db.execute("select count(*) as count from jobs where job_type = 'peer_review'").fetchone()["count"]
 
     assert dict(job) == {
         "run_seconds": 1.0,
@@ -168,6 +173,7 @@ def test_generation_completion_stores_phase_and_self_evaluation_runtime() -> Non
         "self_evaluation_run_seconds": 0.75,
     }
     assert dict(evaluation) == {"evaluator_type": "self", "run_seconds": 0.75}
+    assert peer_count == 0
 
 
 def test_submission_upload_rate_limit_is_per_user_per_utc_day(client: TestClient, monkeypatch) -> None:
@@ -495,6 +501,7 @@ def test_llm_usage_is_attributed_to_consuming_submission(client: TestClient) -> 
 
 
 def test_peer_review_selection_uses_latest_other_user_submission_and_excludes_same_owner() -> None:
+    settings.legacy_peer_review_enabled = True
     generator_owner = _insert_user()
     reviewer_owner = _insert_user()
     second_reviewer_owner = _insert_user()
@@ -519,6 +526,7 @@ def test_peer_review_selection_uses_latest_other_user_submission_and_excludes_sa
 
 
 def test_waiting_reviewer_moves_to_queued_when_submission_becomes_eligible() -> None:
+    settings.legacy_peer_review_enabled = True
     generator_owner = _insert_user()
     reviewer_owner = _insert_user()
     dataset_id, (task_id,) = _insert_dataset()
@@ -543,6 +551,7 @@ def test_waiting_reviewer_moves_to_queued_when_submission_becomes_eligible() -> 
 
 
 def test_failed_latest_reviewer_falls_back_to_previous_eligible_submission() -> None:
+    settings.legacy_peer_review_enabled = True
     generator_owner = _insert_user()
     reviewer_owner = _insert_user()
     dataset_id, (task_id,) = _insert_dataset()
@@ -563,6 +572,7 @@ def test_failed_latest_reviewer_falls_back_to_previous_eligible_submission() -> 
 
 
 def test_new_submission_does_not_backfill_existing_artifact_reviews() -> None:
+    settings.legacy_peer_review_enabled = True
     generator_owner = _insert_user()
     reviewer_owner = _insert_user()
     late_owner = _insert_user()
