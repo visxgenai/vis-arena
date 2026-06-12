@@ -116,6 +116,7 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
 
         write_container_script(root, "generation")
         generation_runtime = run_docker(root, job, phase="generation")
+        generation_runtime["generation_run_seconds"] = generation_runtime["run_seconds"]
         if generation_runtime["returncode"] != 0:
             runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
             update_job_runtime_metadata(job["id"], generation_runtime, runtime_files)
@@ -133,6 +134,8 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         write_container_script(root, "evaluation")
         evaluation_runtime = run_docker(root, job, phase="evaluation", artifact_url=_job_preview_url(job["id"]))
         runtime = combine_runtimes(generation_runtime, evaluation_runtime)
+        runtime["generation_run_seconds"] = generation_runtime["run_seconds"]
+        runtime["self_evaluation_run_seconds"] = evaluation_runtime["run_seconds"]
         runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
         update_job_runtime_metadata(job["id"], runtime, runtime_files)
         if evaluation_runtime["returncode"] != 0:
@@ -768,7 +771,9 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
                 agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
                 evaluation_trajectory_s3_key = ?, generation_agent_trajectory_s3_key = ?,
                 evaluation_agent_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
-                started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
+                started_at = ?, completed_at = ?, run_seconds = ?,
+                generation_run_seconds = ?, self_evaluation_run_seconds = ?,
+                updated_at = ?
             where id = ?
             """,
             (
@@ -787,6 +792,8 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
                 result.get("started_at"),
                 result.get("completed_at"),
                 result.get("run_seconds"),
+                result.get("generation_run_seconds"),
+                result.get("self_evaluation_run_seconds"),
                 now,
                 job_id,
             ),
@@ -816,7 +823,9 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
                 agent_info_s3_key = ?, generation_trajectory_s3_key = ?,
                 evaluation_trajectory_s3_key = ?, generation_agent_trajectory_s3_key = ?,
                 evaluation_agent_trajectory_s3_key = ?, evaluation_report_s3_key = ?,
-                started_at = ?, completed_at = ?, run_seconds = ?, updated_at = ?
+                started_at = ?, completed_at = ?, run_seconds = ?,
+                generation_run_seconds = ?, self_evaluation_run_seconds = ?,
+                updated_at = ?
             where id = ?
             """,
             (
@@ -831,6 +840,8 @@ def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_fi
                 runtime["started_at"],
                 runtime["completed_at"],
                 runtime["run_seconds"],
+                runtime.get("generation_run_seconds"),
+                runtime.get("self_evaluation_run_seconds"),
                 now,
                 job_id,
             ),

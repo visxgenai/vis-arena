@@ -326,6 +326,10 @@ def write_self_evaluation_for_generation(db, job: dict[str, Any], result: dict[s
     evaluation = result.get("result")
     if not isinstance(evaluation, dict):
         return
+    self_evaluation_result = {
+        **result,
+        "run_seconds": result.get("self_evaluation_run_seconds") or result.get("run_seconds"),
+    }
     round_id = job.get("round_id") or "legacy"
     submission = db.execute(
         "select submissions.owner_id, users.name from submissions join users on users.id = submissions.owner_id where submissions.id = ?",
@@ -342,7 +346,7 @@ def write_self_evaluation_for_generation(db, job: dict[str, Any], result: dict[s
         evaluator_submission_id=job["submission_id"],
         evaluator_name=submission["name"],
         job_id=job["id"],
-        result=result,
+        result=self_evaluation_result,
         status="succeeded",
         error=None,
         now=now,

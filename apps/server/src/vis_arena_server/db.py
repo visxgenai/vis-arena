@@ -83,6 +83,8 @@ def init_db() -> None:
               started_at text,
               completed_at text,
               run_seconds real,
+              generation_run_seconds real,
+              self_evaluation_run_seconds real,
               created_at text not null,
               updated_at text not null
             );
@@ -170,6 +172,8 @@ def init_db() -> None:
         _add_column(db, "jobs", "started_at text")
         _add_column(db, "jobs", "completed_at text")
         _add_column(db, "jobs", "run_seconds real")
+        _add_column(db, "jobs", "generation_run_seconds real")
+        _add_column(db, "jobs", "self_evaluation_run_seconds real")
         db.executescript(
             """
             create index if not exists idx_jobs_round_type on jobs(round_id, job_type);

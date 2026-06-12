@@ -145,9 +145,10 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
               generation_trajectory_s3_key, evaluation_trajectory_s3_key,
               generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
               evaluation_report_s3_key, started_at, completed_at,
-              run_seconds, created_at, updated_at
+              run_seconds, generation_run_seconds, self_evaluation_run_seconds,
+              created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -169,10 +170,41 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
                 "2026-06-01T00:00:01+00:00",
                 "2026-06-01T00:00:04+00:00",
                 3.0,
+                2.0,
+                1.0,
                 now,
                 now,
             ),
         )
+        for purpose, input_tokens, output_tokens in (
+            ("generation", 100, 25),
+            ("evaluation", 40, 10),
+        ):
+            db.execute(
+                """
+                insert into llm_usage (
+                  id, job_id, submission_id, user_id, provider, model_id, purpose,
+                  input_tokens, output_tokens, total_tokens, estimated_cost_usd,
+                  latency_ms, created_at
+                )
+                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()),
+                    job_id,
+                    submission_id,
+                    user_id,
+                    "bedrock",
+                    "model",
+                    purpose,
+                    input_tokens,
+                    output_tokens,
+                    input_tokens + output_tokens,
+                    None,
+                    25,
+                    now,
+                ),
+            )
 
     res = client.get(f"/v1/submissions/{submission_id}/jobs", headers=auth)
     assert res.status_code == 200, res.text
@@ -186,6 +218,13 @@ def test_job_listing_returns_runtime_storage_fields(client: TestClient) -> None:
     assert item["evaluation_agent_trajectory_s3_key"] == f"jobs/{job_id}/evaluation/agent-trajectory.jsonl"
     assert item["evaluation_report_s3_key"] == f"jobs/{job_id}/evaluation/report.json"
     assert item["run_seconds"] == 3.0
+    assert item["generation_run_seconds"] == 2.0
+    assert item["self_evaluation_run_seconds"] == 1.0
+    assert item["usage"]["total_tokens"] == 175
+    assert item["generation_usage"]["total_tokens"] == 125
+    assert item["self_evaluation_usage"]["total_tokens"] == 50
+    assert item["usage_by_purpose"]["generation"]["request_count"] == 1
+    assert item["usage_by_purpose"]["evaluation"]["request_count"] == 1
     assert item["result"] == {"score": 0.75}
     assert "result_json" not in item
 

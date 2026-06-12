@@ -182,7 +182,8 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
                    generation_trajectory_s3_key, evaluation_trajectory_s3_key,
                    generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
                    evaluation_report_s3_key, started_at,
-                   completed_at, run_seconds, error, created_at, updated_at
+                   completed_at, run_seconds, generation_run_seconds,
+                   self_evaluation_run_seconds, error, created_at, updated_at
             from jobs
             where (coalesce(job_type, 'generation') = 'generation' and submission_id = ?)
                or (job_type in ('peer_review', 'peer_evaluation', 'central_evaluation') and generator_submission_id = ?)
@@ -190,11 +191,17 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
             """,
             (submission_id, submission_id),
         ).fetchall()
+        usage_by_job = _llm_usage_by_job(db, [row["id"] for row in rows])
     items = []
     for row in rows:
         item = dict(row)
         item["result"] = decode_json(item.pop("result_json"), None)
         item["score"] = item["result"].get("score") if isinstance(item["result"], dict) else None
+        usage = usage_by_job.get(item["id"], _empty_usage_breakdown())
+        item["usage"] = usage["summary"]
+        item["usage_by_purpose"] = usage["by_purpose"]
+        item["generation_usage"] = usage["by_purpose"].get("generation", _empty_usage())
+        item["self_evaluation_usage"] = usage["by_purpose"].get("evaluation", _empty_usage())
         items.append(item)
     return {"items": items}
 
@@ -232,7 +239,99 @@ def get_submission_llm_usage(submission_id: str, user: dict = Depends(current_us
             """,
             (submission_id,),
         ).fetchall()
-    return {"summary": dict(summary), "jobs": [dict(row) for row in by_job]}
+        by_purpose = db.execute(
+            """
+            select
+              purpose,
+              count(*) as request_count,
+              coalesce(sum(input_tokens), 0) as input_tokens,
+              coalesce(sum(output_tokens), 0) as output_tokens,
+              coalesce(sum(total_tokens), 0) as total_tokens,
+              sum(estimated_cost_usd) as estimated_cost_usd
+            from llm_usage
+            where submission_id = ?
+            group by purpose
+            order by purpose
+            """,
+            (submission_id,),
+        ).fetchall()
+        usage_by_job = _llm_usage_by_job(db, [row["job_id"] for row in by_job])
+    jobs = []
+    for row in by_job:
+        item = dict(row)
+        item["by_purpose"] = usage_by_job.get(item["job_id"], _empty_usage_breakdown())["by_purpose"]
+        jobs.append(item)
+    return {
+        "summary": dict(summary),
+        "by_purpose": {row["purpose"]: _usage_from_row(row) for row in by_purpose},
+        "jobs": jobs,
+    }
+
+
+def _empty_usage() -> dict[str, Any]:
+    return {
+        "request_count": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "estimated_cost_usd": None,
+    }
+
+
+def _empty_usage_breakdown() -> dict[str, Any]:
+    return {"summary": _empty_usage(), "by_purpose": {}}
+
+
+def _usage_from_row(row) -> dict[str, Any]:
+    return {
+        "request_count": int(row["request_count"] or 0),
+        "input_tokens": int(row["input_tokens"] or 0),
+        "output_tokens": int(row["output_tokens"] or 0),
+        "total_tokens": int(row["total_tokens"] or 0),
+        "estimated_cost_usd": row["estimated_cost_usd"],
+    }
+
+
+def _add_usage(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    cost = None
+    if left["estimated_cost_usd"] is not None or right["estimated_cost_usd"] is not None:
+        cost = float(left["estimated_cost_usd"] or 0) + float(right["estimated_cost_usd"] or 0)
+    return {
+        "request_count": left["request_count"] + right["request_count"],
+        "input_tokens": left["input_tokens"] + right["input_tokens"],
+        "output_tokens": left["output_tokens"] + right["output_tokens"],
+        "total_tokens": left["total_tokens"] + right["total_tokens"],
+        "estimated_cost_usd": cost,
+    }
+
+
+def _llm_usage_by_job(db, job_ids: list[str]) -> dict[str, dict[str, Any]]:
+    if not job_ids:
+        return {}
+    placeholders = ",".join("?" for _ in job_ids)
+    rows = db.execute(
+        f"""
+        select
+          job_id,
+          purpose,
+          count(*) as request_count,
+          coalesce(sum(input_tokens), 0) as input_tokens,
+          coalesce(sum(output_tokens), 0) as output_tokens,
+          coalesce(sum(total_tokens), 0) as total_tokens,
+          sum(estimated_cost_usd) as estimated_cost_usd
+        from llm_usage
+        where job_id in ({placeholders})
+        group by job_id, purpose
+        """,
+        job_ids,
+    ).fetchall()
+    usage_by_job = {job_id: _empty_usage_breakdown() for job_id in job_ids}
+    for row in rows:
+        usage = _usage_from_row(row)
+        breakdown = usage_by_job.setdefault(row["job_id"], _empty_usage_breakdown())
+        breakdown["by_purpose"][row["purpose"]] = usage
+        breakdown["summary"] = _add_usage(breakdown["summary"], usage)
+    return usage_by_job
 
 
 @app.get("/v1/peer-reviews/rounds")
@@ -395,7 +494,8 @@ def _leaderboard_jobs_by_submission(db, request: Request, submission_ids: list[s
                generation_s3_prefix, evaluation_s3_prefix, agent_info_s3_key,
                generation_trajectory_s3_key, evaluation_trajectory_s3_key,
                generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
-               evaluation_report_s3_key, started_at, completed_at, run_seconds, error
+               evaluation_report_s3_key, started_at, completed_at, run_seconds,
+               generation_run_seconds, self_evaluation_run_seconds, error
         from jobs
         where submission_id in ({placeholders})
           and coalesce(job_type, 'generation') = 'generation'
@@ -404,6 +504,7 @@ def _leaderboard_jobs_by_submission(db, request: Request, submission_ids: list[s
         submission_ids,
     ).fetchall()
     job_ids = [row["id"] for row in job_rows]
+    usage_by_job = _llm_usage_by_job(db, job_ids)
     evaluations_by_job = _leaderboard_evaluations_by_job(db, job_ids)
     for job_row in job_rows:
         job = dict(job_row)
@@ -414,6 +515,11 @@ def _leaderboard_jobs_by_submission(db, request: Request, submission_ids: list[s
             if preview_job_id
             else None
         )
+        usage = usage_by_job.get(job["id"], _empty_usage_breakdown())
+        job["usage"] = usage["summary"]
+        job["usage_by_purpose"] = usage["by_purpose"]
+        job["generation_usage"] = usage["by_purpose"].get("generation", _empty_usage())
+        job["self_evaluation_usage"] = usage["by_purpose"].get("evaluation", _empty_usage())
         job["evaluations"] = evaluations_by_job.get(job["id"], [])
         jobs_by_submission.setdefault(job["submission_id"], []).append(job)
     return jobs_by_submission
@@ -426,7 +532,7 @@ def _leaderboard_evaluations_by_job(db, job_ids: list[str]) -> dict[str, list[di
     placeholders = ",".join("?" for _ in job_ids)
     rows = db.execute(
         f"""
-        select artifact_job_id, evaluator_type, evaluator_name, status, score, max_score,
+        select artifact_job_id, evaluator_type, evaluator_name, job_id, status, score, max_score,
                evaluation_report_s3_key, evaluation_trajectory_s3_key,
                run_seconds, completed_at
         from evaluations
@@ -435,8 +541,11 @@ def _leaderboard_evaluations_by_job(db, job_ids: list[str]) -> dict[str, list[di
         """,
         job_ids,
     ).fetchall()
+    usage_by_job = _llm_usage_by_job(db, [row["job_id"] for row in rows if row["job_id"]])
     for row in rows:
         item = dict(row)
+        usage = usage_by_job.get(item.get("job_id"), _empty_usage_breakdown())
+        item["evaluation_usage"] = usage["by_purpose"].get("evaluation", _empty_usage())
         evaluations_by_job.setdefault(item.pop("artifact_job_id"), []).append(item)
     return evaluations_by_job
 

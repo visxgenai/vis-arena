@@ -144,8 +144,30 @@ def _complete_generation(job_id: str) -> None:
             "started_at": "2026-06-01T00:00:00+00:00",
             "completed_at": "2026-06-01T00:00:01+00:00",
             "run_seconds": 1.0,
+            "generation_run_seconds": 0.25,
+            "self_evaluation_run_seconds": 0.75,
         },
     )
+
+
+def test_generation_completion_stores_phase_and_self_evaluation_runtime() -> None:
+    owner_id = _insert_user()
+    dataset_id, (task_id,) = _insert_dataset()
+    submission_id = _insert_submission(owner_id, status="running")
+    job_id = _insert_generation_job(submission_id, dataset_id, task_id, status="running")
+
+    _complete_generation(job_id)
+
+    with connect() as db:
+        job = db.execute("select run_seconds, generation_run_seconds, self_evaluation_run_seconds from jobs where id = ?", (job_id,)).fetchone()
+        evaluation = db.execute("select evaluator_type, run_seconds from evaluations where artifact_job_id = ? and evaluator_type = 'self'", (job_id,)).fetchone()
+
+    assert dict(job) == {
+        "run_seconds": 1.0,
+        "generation_run_seconds": 0.25,
+        "self_evaluation_run_seconds": 0.75,
+    }
+    assert dict(evaluation) == {"evaluator_type": "self", "run_seconds": 0.75}
 
 
 def test_submission_upload_rate_limit_is_per_user_per_utc_day(client: TestClient, monkeypatch) -> None:
