@@ -1,4 +1,4 @@
-"""Example participant agent (OpenAI tool-loop).
+"""Example participant agent (LLM ReAct loop).
 
 Replace with your own agent — keep these function names and signatures and
 `agent.py` keeps working. See agent.md for the full contract.
@@ -29,12 +29,11 @@ from typing import Any
 from openai import OpenAI
 
 
-# Cloud models available via the arena broker (cheapest -> most capable):
-#   claude-haiku-4-5    fast & cheap, fine for single-shot generation
-#   claude-sonnet-4-6   balanced
-#   claude-opus-4-8     most capable, ~15x the cost
-# Pick one by setting VIS_ARENA_LLM_MODEL; cloud jobs inject it automatically.
-# Run `./agent.py models` in a job to print the live list.
+# Cloud jobs inject VIS_ARENA_LLM_MODEL and VIS_ARENA_LLM_MODELS.
+# Current arena cloud roster:
+#   global.anthropic.claude-opus-4-8  default
+#   global.anthropic.claude-opus-4-7  fallback
+# Run `./agent.py models` in a job to print the live model list.
 LOCAL_DEFAULT_MODEL = "gpt-5.5"
 
 DEFAULT_MODEL = (
@@ -46,20 +45,15 @@ DEFAULT_MODEL = (
 
 GENERATION_PROMPT = """You are a web data visualization agent.
 
-WORKDIR has:
-  task.md   the task (provided below) — do NOT re-read large files
-  data/     task data files (CSV/JSON)
+Use a brief ReAct workflow:
+1. Inspect WORKDIR/task.md and list WORKDIR/data.
+2. Read only small schema/header samples, not the full dataset.
+3. Write a polished interactive artifact to WORKDIR/dist/index.html.
+4. Optionally verify the file exists, then call finish with a concise JSON
+   summary.
 
-Write the artifact into WORKDIR:
-  dist/index.html   required; self-contained; load data at runtime via
-                    fetch('./data/<file>') or d3.json('./data/<file>')
-  source/           optional editable source
-
-Work in ONE step:
-- Do NOT cat/read the data files — the page fetches them in the browser. If you
-  must know field names, inspect only the schema (e.g. `head -c 400 data/<file>`).
-- In your FIRST response, write the COMPLETE dist/index.html with a single bash
-  heredoc, then call finish with a one-line summary."""
+The artifact must work without a dev server. If it needs runtime data, copy or
+embed only what is necessary inside dist/ so previewing dist/index.html works."""
 
 
 EVALUATION_PROMPT = """You are an impartial storytelling-visualization evaluator.
@@ -68,9 +62,12 @@ Inputs:
   WORKDIR/task.md    read with bash to know what was asked
   ARTIFACT_URL       opens the artifact; use verbatim (do not hardcode localhost)
 
-Work in ONE step: write a single playwright script that opens ARTIFACT_URL,
-screenshots it, and reads the visible DOM text + console errors. Then call
-finish with the score JSON. Do NOT load the raw dataset.
+Use a brief ReAct workflow:
+1. Open ARTIFACT_URL with Playwright.
+2. Inspect visible DOM text, console errors, layout, and core interactions.
+3. Call finish with the score JSON.
+
+Do not load the raw dataset during evaluation.
 
 Score on 100 points across five criteria. Each rated 1-5 on the anchors
 below; score = anchor x 4; five criteria x max_score 20 = 100. Required ids:
@@ -123,7 +120,7 @@ def info() -> dict[str, Any]:
         "version": "0.3.0",
         "commands": ["generate", "evaluate"],
         "providers": ["openai", "arena-cloud"],
-        "notes": "Simple LLM tool-loop agent with bash and Playwright tools.",
+        "notes": "Small ReAct agent with bash and Playwright tools.",
     }
 
 
@@ -158,7 +155,7 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
 # Tool loop, LLM client, and tools — replace freely.
 # ---------------------------------------------------------------------------
 
-def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str, max_steps: int = 2) -> dict[str, Any]:
+def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str) -> dict[str, Any]:
     print(f"[agent] {purpose}: model={DEFAULT_MODEL}", file=sys.stderr)
     client = _make_llm_client(purpose)
     messages: list[dict[str, Any]] = [
@@ -206,18 +203,12 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
         },
     ]
 
-    # Bounded ReAct loop: the prompt drives a one-shot result, and the step cap
-    # keeps cost predictable. Raise max_steps if you want more refinement passes.
-    for step in range(1, max_steps + 1):
-        if step == max_steps:
-            messages.append({"role": "user", "content": "Final step — call finish now with the result JSON."})
+    while True:
         message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:
-            if step == max_steps:
-                break
-            messages.append({"role": "user", "content": "Write the complete artifact now, then call finish."})
+            messages.append({"role": "user", "content": "Continue with the brief workflow using tools, or call finish with the final JSON."})
             continue
         for call in calls:
             function = call.get("function") or {}
@@ -237,16 +228,28 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
             else:
                 output = f"Unknown tool: {function.get('name')}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
-
-    return {"notes": f"step limit ({max_steps}) reached"}
+        if purpose == "generation" and (tool_root / "dist" / "index.html").exists():
+            messages.append({"role": "user", "content": "dist/index.html exists. Verify only if needed, then call finish."})
 
 
 class OpenAIChatClient:
     def __init__(self) -> None:
         self.client = OpenAI()
 
-    def create(self, *, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: str) -> dict[str, Any]:
-        response = self.client.chat.completions.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {"model": model, "messages": messages, "max_tokens": 8192}
+        if tools:
+            kwargs["tools"] = tools
+            if tool_choice is not None:
+                kwargs["tool_choice"] = tool_choice
+        response = self.client.chat.completions.create(**kwargs)
         return response.choices[0].message.model_dump(exclude_none=True)
 
 
@@ -259,10 +262,19 @@ class ArenaChatClient:
         self.client = VisArenaClient(
             base_url=os.environ.get("VIS_ARENA_SERVER_URL", "http://host.docker.internal:8000"),
             token=os.environ["VIS_ARENA_API_TOKEN"],
-            timeout=180.0,
+            # Bedrock can take several minutes when returning a large
+            # tool call that writes the final HTML artifact.
+            timeout=600.0,
         )
 
-    def create(self, *, model: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], tool_choice: str) -> dict[str, Any]:
+    def create(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        tool_choice: str | dict[str, Any] | None,
+    ) -> dict[str, Any]:
         response = self.client.create_llm_message(
             job_id=self.job_id,
             messages=messages,
@@ -270,6 +282,7 @@ class ArenaChatClient:
             tool_choice=tool_choice,
             model=model,
             purpose=self.purpose,
+            max_tokens=8192,
         )
         return response.message
 

@@ -1,7 +1,7 @@
 # Vis Arena Template Agent
 
-A minimal LLM agent that builds and judges a web data visualization. It runs a
-tool loop with:
+A minimal LLM agent that builds and judges a web data visualization. The
+template uses a small ReAct loop with:
 
 - `bash(command, cwd)` — file inspection and generation
 - `playwright(script, cwd)` — browser-based evaluation (the LLM writes the script, the tool executes it)
@@ -12,7 +12,7 @@ tool loop with:
 | File              | What it is                                                                |
 |-------------------|---------------------------------------------------------------------------|
 | `agent.py`        | Arena protocol entrypoint. You usually do NOT edit it.                    |
-| `example_agent.py`| The example implementation (OpenAI tool-loop). **Edit or replace this.**  |
+| `example_agent.py`| The example implementation. **Edit or replace this.**                    |
 | `agent.md`        | In-bundle contract reference. Read this if you want the exact paths/JSON. |
 | `submission.yaml` | Bundle metadata and command list.                                         |
 | `pyproject.toml`  | Python dependencies.                                                      |
@@ -35,7 +35,7 @@ is yours to delete or rewrite.
 
 1. **Import your existing Python package** — call your code from inside the hooks.
 2. **Shell out to your CLI** — `subprocess.run([sys.executable, "-m", "my_agent", ...])`.
-3. **Inline implementation** — replace the OpenAI tool-loop with your own code.
+3. **Inline implementation** — replace the tool-loop with your own code.
 
 `workdir` for `generate` contains `task.md` and `data/`. `workdir` for
 `evaluate` contains just `task.md` — the artifact is reached through
@@ -65,10 +65,13 @@ The arena exposes these models via `VIS_ARENA_LLM_MODELS`. Set
 
 | Model id | Notes |
 |---|---|
-| `global.anthropic.claude-opus-4-8` | Default. Latest Claude Opus. |
+| `global.anthropic.claude-opus-4-8` | Default. |
 | `global.anthropic.claude-opus-4-7` | Previous Claude Opus. |
 
 Run `./agent.py models` inside a cloud job to print the live list.
+To select one explicitly in your agent environment, set
+`VIS_ARENA_LLM_MODEL=global.anthropic.claude-opus-4-7` or
+`VIS_ARENA_LLM_MODEL=global.anthropic.claude-opus-4-8`.
 
 ## Submit
 
@@ -94,7 +97,7 @@ cat > .env <<'EOF'
 OPENAI_API_KEY=sk-...
 EOF
 
-vis-arena local run . --dataset monthly-sales
+vis-arena local run . --dataset ieee-vis-publications
 ```
 
 The command reads `OPENAI_API_KEY` from `.env`, uses your stored arena server
