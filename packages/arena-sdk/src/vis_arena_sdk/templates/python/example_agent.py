@@ -29,9 +29,12 @@ from typing import Any
 from openai import OpenAI
 
 
-# Local fallback. Cloud jobs override via VIS_ARENA_LLM_MODEL (worker-injected).
-# Run `./agent.py models` in a job to print the live list; see README.md for the
-# current cloud roster.
+# Cloud models available via the arena broker (cheapest -> most capable):
+#   claude-haiku-4-5    fast & cheap, fine for single-shot generation
+#   claude-sonnet-4-6   balanced
+#   claude-opus-4-8     most capable, ~15x the cost
+# Pick one by setting VIS_ARENA_LLM_MODEL; cloud jobs inject it automatically.
+# Run `./agent.py models` in a job to print the live list.
 LOCAL_DEFAULT_MODEL = "gpt-5.5"
 
 DEFAULT_MODEL = (
@@ -43,16 +46,20 @@ DEFAULT_MODEL = (
 
 GENERATION_PROMPT = """You are a web data visualization agent.
 
-You are given a WORKDIR containing:
-  task.md           the task description — read this first with the bash tool
-  data/             task data files
+WORKDIR has:
+  task.md   the task (provided below) — do NOT re-read large files
+  data/     task data files (CSV/JSON)
 
-Write the artifact into the SAME WORKDIR:
-  source/           editable web source (yours)
-  dist/index.html   required, must work without a dev server
+Write the artifact into WORKDIR:
+  dist/index.html   required; self-contained; load data at runtime via
+                    fetch('./data/<file>') or d3.json('./data/<file>')
+  source/           optional editable source
 
-Use the bash tool to inspect data and write files. When done, call finish
-with a concise JSON summary."""
+Work in ONE step:
+- Do NOT cat/read the data files — the page fetches them in the browser. If you
+  must know field names, inspect only the schema (e.g. `head -c 400 data/<file>`).
+- In your FIRST response, write the COMPLETE dist/index.html with a single bash
+  heredoc, then call finish with a one-line summary."""
 
 
 EVALUATION_PROMPT = """You are an impartial storytelling-visualization evaluator.
@@ -61,15 +68,15 @@ Inputs:
   WORKDIR/task.md    read with bash to know what was asked
   ARTIFACT_URL       opens the artifact; use verbatim (do not hardcode localhost)
 
-Open ARTIFACT_URL with playwright (page.goto), then click, hover, resize,
-inspect DOM, check console, screenshot. Same procedure for self / peer /
-central-judge evaluation.
+Work in ONE step: write a single playwright script that opens ARTIFACT_URL,
+screenshots it, and reads the visible DOM text + console errors. Then call
+finish with the score JSON. Do NOT load the raw dataset.
 
 Score on 100 points across five criteria. Each rated 1-5 on the anchors
 below; score = anchor x 4; five criteria x max_score 20 = 100. Required ids:
 
-1. data_fidelity - do displayed values, totals, and trends match WORKDIR/data?
-   Read the data with bash, then reconcile against DOM text / screenshot values.
+1. data_fidelity - do displayed values, totals, and trends look internally
+   consistent and match what the task asks for?
      1 fabricated or contradicts data · 2 major mismatch in key values ·
      3 mostly faithful, minor discrepancies · 4 faithful, all spot-checks pass ·
      5 fully faithful incl. aggregations, units, and edge cases.
@@ -151,7 +158,8 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
 # Tool loop, LLM client, and tools — replace freely.
 # ---------------------------------------------------------------------------
 
-def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str) -> dict[str, Any]:
+def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str, max_steps: int = 2) -> dict[str, Any]:
+    print(f"[agent] {purpose}: model={DEFAULT_MODEL}", file=sys.stderr)
     client = _make_llm_client(purpose)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
@@ -198,13 +206,20 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
         },
     ]
 
-    while True:
+    # Bounded ReAct loop: the prompt drives a one-shot result, and the step cap
+    # keeps cost predictable. Raise max_steps if you want more refinement passes.
+    for step in range(1, max_steps + 1):
+        if step == max_steps:
+            messages.append({"role": "user", "content": "Final step — call finish now with the result JSON."})
         message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
         messages.append(message)
-        if not message.get("tool_calls"):
-            messages.append({"role": "user", "content": "Continue using tools, or call finish with the final JSON."})
+        calls = message.get("tool_calls") or []
+        if not calls:
+            if step == max_steps:
+                break
+            messages.append({"role": "user", "content": "Write the complete artifact now, then call finish."})
             continue
-        for call in message["tool_calls"]:
+        for call in calls:
             function = call.get("function") or {}
             try:
                 args = json.loads(function.get("arguments") or "{}")
@@ -222,6 +237,8 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
             else:
                 output = f"Unknown tool: {function.get('name')}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
+
+    return {"notes": f"step limit ({max_steps}) reached"}
 
 
 class OpenAIChatClient:
