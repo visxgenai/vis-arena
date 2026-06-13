@@ -781,13 +781,13 @@ def test_worker_peer_review_uses_target_preview_url_and_reads_evaluation(tmp_pat
     assert result["result"] == {"score": 77}
 
 
-def test_round_close_snapshots_latest_submission_per_user_and_queues_generation_jobs() -> None:
+def test_round_close_snapshots_latest_submission_per_user_without_regenerating() -> None:
     start = "2026-06-01T00:00:00+00:00"
     end = "2026-06-01T01:00:00+00:00"
     first_owner = _insert_user()
     second_owner = _insert_user()
     late_owner = _insert_user()
-    _dataset_id, task_ids = _insert_dataset(task_count=2)
+    _dataset_id, _task_ids = _insert_dataset(task_count=2)
     old_first_submission = _insert_submission(first_owner, finalized_at="2026-05-31T23:00:00+00:00")
     latest_first_submission = _insert_submission(first_owner, finalized_at="2026-06-01T00:30:00+00:00")
     carried_second_submission = _insert_submission(second_owner, finalized_at="2026-05-31T22:00:00+00:00")
@@ -805,20 +805,11 @@ def test_round_close_snapshots_latest_submission_per_user_and_queues_generation_
     assert late_owner not in participants
     assert old_first_submission not in {item["submission_id"] for item in participants.values()}
     with connect() as db:
-        jobs = db.execute(
-            """
-            select round_id, submission_id, job_type, task_id, status
-            from jobs
-            where round_id = ?
-            order by submission_id, task_id
-            """,
-            (round_id,),
-        ).fetchall()
+        jobs = db.execute("select id from jobs where round_id = ?", (round_id,)).fetchall()
 
-    assert len(jobs) == 2 * len(task_ids)
-    assert {row["submission_id"] for row in jobs} == {latest_first_submission, carried_second_submission}
-    assert {row["job_type"] for row in jobs} == {"generation"}
-    assert {row["status"] for row in jobs} == {"queued"}
+    # close_round only snapshots participants; artifacts already exist (event-driven),
+    # so it must NOT queue any generation jobs.
+    assert jobs == []
 
 
 def test_round_admin_api_requires_admin_and_opens_round(client: TestClient, monkeypatch) -> None:
@@ -854,37 +845,32 @@ def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_score
     second_owner = _insert_user()
     first_submission = _insert_submission(first_owner, finalized_at="2026-06-01T00:10:00+00:00")
     second_submission = _insert_submission(second_owner, finalized_at="2026-06-01T00:20:00+00:00")
+    # Artifacts already exist from event-driven generation at submission time
+    # (round_id NULL); the round grades these without re-generating.
+    first_job = _insert_generation_job(first_submission, dataset_id, task_id, status="succeeded")
+    second_job = _insert_generation_job(second_submission, dataset_id, task_id, status="succeeded")
+    with connect() as db:
+        for job_id in (first_job, second_job):
+            db.execute(
+                """
+                update jobs
+                set preview_s3_key = ?, artifact_s3_prefix = ?, completed_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (
+                    f"jobs/{job_id}/generation/preview/index.html",
+                    f"jobs/{job_id}/generation/artifacts",
+                    now_iso(),
+                    now_iso(),
+                    job_id,
+                ),
+            )
     round_id = rounds.open_round(
         "Peer Round",
         starts_at="2026-06-01T00:00:00+00:00",
         ends_at="2026-06-01T01:00:00+00:00",
     )["id"]
     rounds.close_round(round_id)
-    with connect() as db:
-        generation_jobs = db.execute(
-            "select id, submission_id from jobs where round_id = ? and job_type = 'generation'",
-            (round_id,),
-        ).fetchall()
-        assert len(generation_jobs) == 2
-        for job in generation_jobs:
-            db.execute(
-                """
-                update jobs
-                set status = 'succeeded',
-                    preview_s3_key = ?,
-                    artifact_s3_prefix = ?,
-                    completed_at = ?,
-                    updated_at = ?
-                where id = ?
-                """,
-                (
-                    f"jobs/{job['id']}/generation/preview/index.html",
-                    f"jobs/{job['id']}/generation/artifacts",
-                    now_iso(),
-                    now_iso(),
-                    job["id"],
-                ),
-            )
 
     first_detail = rounds.start_peer_review(round_id)
     second_detail = rounds.start_peer_review(round_id)

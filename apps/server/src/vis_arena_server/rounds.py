@@ -137,12 +137,9 @@ def close_round(round_id: str) -> dict[str, Any]:
                     now,
                 ),
             )
-        datasets = db.execute("select id from datasets where visibility = 'public' and task_count > 0").fetchall()
-        for participant in selected:
-            for dataset in datasets:
-                tasks = db.execute("select id from tasks where dataset_id = ?", (dataset["id"],)).fetchall()
-                for task in tasks:
-                    _insert_generation_job(db, round_id, participant["submission_id"], dataset["id"], task["id"], now)
+        # No generation is queued here: each participant's artifact was already
+        # produced event-driven at submission time. The round only snapshots who
+        # is in play; start_peer_review grades those existing artifacts.
         db.execute(
             """
             update review_rounds
@@ -171,15 +168,27 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             """,
             (round_id,),
         ).fetchall()
+        # Grade the latest succeeded artifact for each participant's snapshotted
+        # submission, regardless of which round produced it. Artifacts are made
+        # once (event-driven, round_id NULL) at submission time, so the round
+        # never re-generates; it just points peer reviewers at what already exists.
         artifacts = db.execute(
             """
-            select jobs.*, submissions.owner_id as target_owner_id
-            from jobs
-            join submissions on submissions.id = jobs.submission_id
-            where jobs.round_id = ?
-              and coalesce(jobs.job_type, 'generation') = 'generation'
-              and jobs.status = 'succeeded'
-              and jobs.preview_s3_key is not null
+            select * from (
+              select jobs.*, submissions.owner_id as target_owner_id,
+                     row_number() over (
+                       partition by jobs.submission_id, jobs.dataset_id, jobs.task_id
+                       order by jobs.completed_at desc, jobs.created_at desc
+                     ) as rn
+              from jobs
+              join submissions on submissions.id = jobs.submission_id
+              join round_participants rp
+                on rp.submission_id = jobs.submission_id and rp.round_id = ?
+              where coalesce(jobs.job_type, 'generation') = 'generation'
+                and jobs.status = 'succeeded'
+                and jobs.preview_s3_key is not null
+            )
+            where rn = 1
             """,
             (round_id,),
         ).fetchall()
@@ -196,6 +205,7 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
                     evaluator_name=participant["user_name"],
                     job_type="peer_evaluation",
                     now=now,
+                    round_id=round_id,
                 )
         db.execute(
             """
@@ -256,8 +266,13 @@ def insert_evaluation_job(
     evaluator_name: str | None,
     job_type: str,
     now: str,
+    round_id: str | None = None,
 ) -> str | None:
-    round_id = artifact_job.get("round_id") or "legacy"
+    # The evaluation belongs to the review round that scheduled it, which may
+    # differ from the round that produced the artifact (event-driven artifacts
+    # have round_id NULL). Fall back to the artifact's round for legacy callers.
+    review_round_id = round_id or artifact_job.get("round_id")
+    round_key = review_round_id or "legacy"
     existing = db.execute(
         """
         select id from evaluations
@@ -266,7 +281,7 @@ def insert_evaluation_job(
           and evaluator_type = ?
           and evaluator_submission_id = ?
         """,
-        (round_id, artifact_job["id"], evaluator_type, evaluator_submission_id),
+        (round_key, artifact_job["id"], evaluator_type, evaluator_submission_id),
     ).fetchone()
     if existing is not None:
         return None
@@ -285,7 +300,7 @@ def insert_evaluation_job(
             job_id,
             evaluator_submission_id,
             job_type,
-            artifact_job.get("round_id"),
+            review_round_id,
             artifact_job["submission_id"],
             artifact_job["id"],
             evaluator_user_id,
@@ -307,7 +322,7 @@ def insert_evaluation_job(
         """,
         (
             evaluation_id,
-            round_id,
+            round_key,
             artifact_job["id"],
             evaluator_type,
             evaluator_user_id,
@@ -535,32 +550,6 @@ def _select_round_participants(db, starts_at: str, ends_at: str) -> list[dict[st
         }
         for row in rows
     ]
-
-
-def _insert_generation_job(db, round_id: str, submission_id: str, dataset_id: str, task_id: str, now: str) -> None:
-    existing = db.execute(
-        """
-        select id from jobs
-        where round_id = ?
-          and coalesce(job_type, 'generation') = 'generation'
-          and submission_id = ?
-          and dataset_id = ?
-          and task_id = ?
-        """,
-        (round_id, submission_id, dataset_id, task_id),
-    ).fetchone()
-    if existing:
-        return
-    db.execute(
-        """
-        insert into jobs (
-          id, submission_id, job_type, round_id, generator_submission_id,
-          dataset_id, task_id, status, created_at, updated_at
-        )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (str(uuid.uuid4()), submission_id, "generation", round_id, submission_id, dataset_id, task_id, "queued", now, now),
-    )
 
 
 def _upsert_evaluation_result(
