@@ -31,7 +31,7 @@ cat > .env <<'EOF'
 OPENAI_API_KEY=sk-...
 EOF
 
-vis-arena local run . --dataset monthly-sales
+vis-arena local run . --dataset ieee-vis-publications
 vis-arena submit . --name "my-agent-v1"
 vis-arena submissions watch <submission-id>
 vis-arena submissions preview <submission-id>

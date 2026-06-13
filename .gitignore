@@ -18,3 +18,5 @@ references/
 .ssh/
 *.pem
 build/
+migration-backup/
+.playwright-mcp/
