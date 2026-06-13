@@ -120,7 +120,10 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         if generation_runtime["returncode"] != 0:
             runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
             update_job_runtime_metadata(job["id"], generation_runtime, runtime_files)
-            raise RuntimeError(f"Docker generation failed with exit {generation_runtime['returncode']}:\n{generation_runtime['log_tail']}")
+            raise RuntimeError(
+                f"Docker generation failed with exit {generation_runtime['returncode']}:\n"
+                f"{failure_log_tail(reports_dir, 'generation', generation_runtime)}"
+            )
 
         make_generation_artifacts_zip(work_dir, artifacts_zip)
         preview_s3_key = None
@@ -139,7 +142,10 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
         update_job_runtime_metadata(job["id"], runtime, runtime_files)
         if evaluation_runtime["returncode"] != 0:
-            raise RuntimeError(f"Docker evaluation failed with exit {evaluation_runtime['returncode']}:\n{evaluation_runtime['log_tail']}")
+            raise RuntimeError(
+                f"Docker evaluation failed with exit {evaluation_runtime['returncode']}:\n"
+                f"{failure_log_tail(reports_dir, 'evaluation', evaluation_runtime)}"
+            )
 
         evaluation = json.loads((work_dir / "evaluate" / "evaluation.json").read_text(encoding="utf-8"))
         return {
@@ -425,6 +431,14 @@ def combine_runtimes(*runtimes: dict[str, Any]) -> dict[str, Any]:
         "returncode": runtimes[-1]["returncode"],
         "log_tail": "\n".join(str(runtime["log_tail"]) for runtime in runtimes)[-4000:],
     }
+
+
+def failure_log_tail(reports_dir: Path, phase: str, runtime: dict[str, Any]) -> str:
+    tails = [str(runtime.get("log_tail") or "").strip()]
+    phase_log = reports_dir / phase / "runtime.log"
+    if phase_log.exists():
+        tails.append(phase_log.read_text(encoding="utf-8", errors="replace")[-4000:].strip())
+    return "\n".join(tail for tail in tails if tail)[-4000:]
 
 
 def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict[str, str | None]:

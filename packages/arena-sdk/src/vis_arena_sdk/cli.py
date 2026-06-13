@@ -240,6 +240,8 @@ def submissions_results(submission_id: str, server_url: Optional[str] = None, to
             duration = "" if run_seconds is None else f"{float(run_seconds):.1f}s"
             job_type = result.get("job_type") or "generation"
             typer.echo(f"{result['id']}\t{job_type}\t{result['task_id']}\t{result['status']}\t{duration}\t{preview}")
+            if result.get("error"):
+                typer.echo(f"  error: {_short_error(str(result['error']))}")
     finally:
         client.close()
 
@@ -286,6 +288,13 @@ def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> 
 def _job_errors(jobs: list[dict]) -> str:
     errors = [f"{job.get('task_id') or job.get('id')}: {job.get('error')}" for job in jobs if job.get("error")]
     return "\n".join(errors)
+
+
+def _short_error(error: str, limit: int = 1200) -> str:
+    error = error.strip()
+    if len(error) <= limit:
+        return error
+    return error[:limit].rstrip() + "\n  ... truncated; use the server job logs for the full trace"
 
 
 @local_app.command("run")
