@@ -454,6 +454,22 @@ def serve_job_preview(job_id: str, asset_path: str, token: str | None = None) ->
     return Response(content=body, media_type=content_type)
 
 
+@app.get("/v1/jobs/{job_id}/evaluation-report")
+def get_job_evaluation_report(job_id: str) -> dict:
+    # The evaluation report (the JSON the reviewer agent wrote: score, summary, and a
+    # per-criterion rubric breakdown). Public, like previews — these are about artifacts
+    # already shown on the public leaderboard.
+    with connect() as db:
+        row = db.execute("select evaluation_report_s3_key from jobs where id = ?", (job_id,)).fetchone()
+    if row is None or not row["evaluation_report_s3_key"]:
+        raise HTTPException(status_code=404, detail="Evaluation report not found")
+    body, _ = read_s3_file(row["evaluation_report_s3_key"])
+    report = decode_json(body.decode("utf-8", errors="replace"), None)
+    if not isinstance(report, dict):
+        raise HTTPException(status_code=500, detail="Evaluation report is not valid JSON")
+    return report
+
+
 @app.get("/v1/leaderboard")
 def leaderboard(request: Request) -> dict:
     with connect() as db:
