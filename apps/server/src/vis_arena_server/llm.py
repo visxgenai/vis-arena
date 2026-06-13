@@ -29,11 +29,13 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
         raise HTTPException(status_code=400, detail="Cloud message brokerage is only configured for Bedrock")
 
     context = _job_context(payload.job_id, user_id)
-    used_tokens = _submission_token_total(context["submission_id"])
-    if used_tokens >= settings.llm_max_tokens_per_submission:
-        raise HTTPException(status_code=429, detail="Submission LLM token budget exhausted")
+    # Budget is per job (= per dataset run): a submission fans out to one generation
+    # job per public dataset, so each dataset gets its own full token budget.
+    used_tokens = _job_token_total(payload.job_id)
+    if used_tokens >= settings.llm_max_tokens_per_job:
+        raise HTTPException(status_code=429, detail="Job LLM token budget exhausted")
 
-    remaining_tokens = settings.llm_max_tokens_per_submission - used_tokens
+    remaining_tokens = settings.llm_max_tokens_per_job - used_tokens
     max_tokens = max(1, min(payload.max_tokens, remaining_tokens))
     model_id = _resolve_bedrock_model(payload.model)
     _record_llm_request_trajectory(payload, context, model_id, max_tokens, remaining_tokens)
@@ -77,6 +79,7 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
         "model": bedrock["model"],
         "message": bedrock["message"],
         "usage": usage,
+        # Field name kept for SDK/agent compatibility; value is the per-job remaining budget.
         "remaining_submission_tokens": max(0, remaining_tokens - total_tokens),
     }
 
@@ -99,9 +102,9 @@ def _job_context(job_id: str, user_id: str) -> dict[str, Any]:
     return context
 
 
-def _submission_token_total(submission_id: str) -> int:
+def _job_token_total(job_id: str) -> int:
     with connect() as db:
-        row = db.execute("select coalesce(sum(total_tokens), 0) as total from llm_usage where submission_id = ?", (submission_id,)).fetchone()
+        row = db.execute("select coalesce(sum(total_tokens), 0) as total from llm_usage where job_id = ?", (job_id,)).fetchone()
     return int(row["total"] or 0)
 
 

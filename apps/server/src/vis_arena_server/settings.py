@@ -54,7 +54,13 @@ class Settings:
     ]
     bedrock_default_model_id: str = bedrock_model_ids[0] if bedrock_model_ids else ""
     bedrock_read_timeout_seconds: int = int(os.environ.get("VIS_ARENA_BEDROCK_READ_TIMEOUT_SECONDS", "600"))
-    llm_max_tokens_per_submission: int = int(os.environ.get("VIS_ARENA_LLM_MAX_TOKENS_PER_SUBMISSION", "1000000"))
+    # Token budget per job (= per dataset run). Falls back to the legacy per-submission env var.
+    llm_max_tokens_per_job: int = int(
+        os.environ.get(
+            "VIS_ARENA_LLM_MAX_TOKENS_PER_JOB",
+            os.environ.get("VIS_ARENA_LLM_MAX_TOKENS_PER_SUBMISSION", "1000000"),
+        )
+    )
     llm_input_usd_per_1m: float = float(os.environ.get("VIS_ARENA_LLM_INPUT_USD_PER_1M", "0"))
     llm_output_usd_per_1m: float = float(os.environ.get("VIS_ARENA_LLM_OUTPUT_USD_PER_1M", "0"))
     s3_bucket: str = os.environ.get("VIS_ARENA_S3_BUCKET", "vis-arena-dev")
