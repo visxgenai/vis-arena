@@ -428,8 +428,14 @@ def redirect_job_preview(job_id: str, request: Request) -> RedirectResponse:
 
 
 @app.get("/v1/jobs/{job_id}/preview/{asset_path:path}")
-def serve_job_preview(job_id: str, asset_path: str, token: str) -> Response:
-    _verify_preview_token(token, job_id)
+def serve_job_preview(job_id: str, asset_path: str, token: str | None = None) -> Response:
+    # The token is optional. Previews are public (the redirect that mints it is
+    # unauthenticated and previews appear on the public leaderboard), and runtime
+    # data fetches from the artifact's own JS (e.g. d3.json('data.json')) can't
+    # carry it — only rewritten src/href attributes can. Verify it when present;
+    # otherwise serve the asset anyway so those JS-loaded assets work.
+    if token:
+        _verify_preview_token(token, job_id)
     asset_path = _safe_preview_asset_path(asset_path or "index.html")
     with connect() as db:
         row = db.execute("select preview_s3_key from jobs where id = ?", (job_id,)).fetchone()
@@ -437,12 +443,14 @@ def serve_job_preview(job_id: str, asset_path: str, token: str) -> Response:
         raise HTTPException(status_code=404, detail="Preview not found")
     preview_prefix = row["preview_s3_key"].rsplit("/", 1)[0]
     body, content_type = read_s3_file(f"{preview_prefix}/{asset_path}")
+    # Embedded src/href asset URLs still get a token so they remain valid links.
+    rewrite_token = token or _create_preview_token(job_id)
     if content_type.startswith("text/html"):
         text = body.decode("utf-8", errors="replace")
-        body = _rewrite_preview_asset_urls(text, job_id, token).encode("utf-8")
+        body = _rewrite_preview_asset_urls(text, job_id, rewrite_token).encode("utf-8")
     elif content_type.startswith("text/css"):
         text = body.decode("utf-8", errors="replace")
-        body = _rewrite_preview_css_urls(text, job_id, token).encode("utf-8")
+        body = _rewrite_preview_css_urls(text, job_id, rewrite_token).encode("utf-8")
     return Response(content=body, media_type=content_type)
 
 
