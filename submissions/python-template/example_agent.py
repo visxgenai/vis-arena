@@ -58,6 +58,9 @@ embed only what is necessary inside dist/ so previewing dist/index.html works.""
 
 EVALUATION_PROMPT = """You are an impartial storytelling-visualization evaluator.
 
+The leaderboard aggregates raw scores, so the overall "score" MUST be on a
+0-100 scale (max_score = 100). Do not use a 0-10 or other scale.
+
 Inputs:
   WORKDIR/task.md    read with bash to know what was asked
   ARTIFACT_URL       opens the artifact; use verbatim (do not hardcode localhost)
