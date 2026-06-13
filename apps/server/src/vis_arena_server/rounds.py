@@ -196,6 +196,16 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             for participant in participants:
                 if participant["user_id"] == artifact["target_owner_id"]:
                     continue
+                if carry_forward_peer_evaluation(
+                    db,
+                    artifact_job=dict(artifact),
+                    evaluator_submission_id=participant["submission_id"],
+                    evaluator_user_id=participant["user_id"],
+                    evaluator_name=participant["user_name"],
+                    now=now,
+                    round_id=round_id,
+                ):
+                    continue
                 insert_evaluation_job(
                     db,
                     artifact_job=dict(artifact),
@@ -215,6 +225,7 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             """,
             ("peer_review", now, now, round_id),
         )
+    complete_round_if_ready(round_id)
     return get_round_detail(round_id) or {"id": round_id}
 
 
@@ -335,6 +346,86 @@ def insert_evaluation_job(
         ),
     )
     return job_id
+
+
+def carry_forward_peer_evaluation(
+    db,
+    *,
+    artifact_job: dict[str, Any],
+    evaluator_submission_id: str,
+    evaluator_user_id: str,
+    evaluator_name: str | None,
+    now: str,
+    round_id: str,
+) -> bool:
+    existing = db.execute(
+        """
+        select id from evaluations
+        where round_id = ?
+          and artifact_job_id = ?
+          and evaluator_type = 'peer'
+          and evaluator_submission_id = ?
+        """,
+        (round_id, artifact_job["id"], evaluator_submission_id),
+    ).fetchone()
+    if existing is not None:
+        return True
+
+    source = db.execute(
+        """
+        select *
+        from evaluations
+        where artifact_job_id = ?
+          and evaluator_type = 'peer'
+          and evaluator_submission_id = ?
+          and status = 'succeeded'
+          and round_id != ?
+        order by completed_at desc, created_at desc
+        limit 1
+        """,
+        (artifact_job["id"], evaluator_submission_id, round_id),
+    ).fetchone()
+    if source is None:
+        return False
+
+    db.execute(
+        """
+        insert into evaluations (
+          id, round_id, artifact_job_id, evaluator_type, evaluator_user_id,
+          evaluator_submission_id, evaluator_name, job_id, status, score,
+          max_score, result_json, evaluation_report_s3_key,
+          evaluation_trajectory_s3_key, run_seconds, source_evaluation_id,
+          carried_from_round_id, is_carried_forward, error, created_at,
+          completed_at, updated_at
+        )
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()),
+            round_id,
+            artifact_job["id"],
+            "peer",
+            evaluator_user_id,
+            evaluator_submission_id,
+            evaluator_name,
+            source["job_id"],
+            "succeeded",
+            source["score"],
+            source["max_score"],
+            source["result_json"],
+            source["evaluation_report_s3_key"],
+            source["evaluation_trajectory_s3_key"],
+            source["run_seconds"],
+            source["id"],
+            source["round_id"],
+            1,
+            None,
+            now,
+            now,
+            now,
+        ),
+    )
+    return True
 
 
 def write_self_evaluation_for_generation(db, job: dict[str, Any], result: dict[str, Any], now: str) -> None:
@@ -587,7 +678,9 @@ def _upsert_evaluation_result(
             set evaluator_user_id = ?, evaluator_name = ?, job_id = ?, status = ?,
                 score = ?, max_score = ?, result_json = ?,
                 evaluation_report_s3_key = ?, evaluation_trajectory_s3_key = ?,
-                run_seconds = ?, error = ?, completed_at = ?, updated_at = ?
+                run_seconds = ?, source_evaluation_id = null,
+                carried_from_round_id = null, is_carried_forward = 0,
+                error = ?, completed_at = ?, updated_at = ?
             where id = ?
             """,
             (

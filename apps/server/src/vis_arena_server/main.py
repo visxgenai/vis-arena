@@ -532,11 +532,20 @@ def _leaderboard_evaluations_by_job(db, job_ids: list[str]) -> dict[str, list[di
     placeholders = ",".join("?" for _ in job_ids)
     rows = db.execute(
         f"""
-        select artifact_job_id, evaluator_type, evaluator_name, job_id, status, score, max_score,
-               evaluation_report_s3_key, evaluation_trajectory_s3_key,
-               run_seconds, completed_at
-        from evaluations
-        where artifact_job_id in ({placeholders})
+        select artifact_job_id, evaluator_type, evaluator_submission_id, evaluator_name,
+               job_id, status, score, max_score, evaluation_report_s3_key,
+               evaluation_trajectory_s3_key, run_seconds, completed_at,
+               source_evaluation_id, carried_from_round_id, is_carried_forward
+        from (
+          select evaluations.*,
+                 row_number() over (
+                   partition by artifact_job_id, evaluator_type, evaluator_submission_id
+                   order by completed_at desc, created_at desc
+                 ) as rn
+          from evaluations
+          where artifact_job_id in ({placeholders})
+        )
+        where rn = 1
         order by evaluator_type, completed_at
         """,
         job_ids,

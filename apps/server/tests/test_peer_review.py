@@ -936,3 +936,127 @@ def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_score
     assert {row["status"] for row in stored_evals} == {"succeeded"}
     assert {row["run_seconds"] for row in stored_evals} == {2.0}
     assert all(row["evaluation_report_s3_key"] for row in stored_evals)
+
+
+def test_peer_review_reuses_completed_score_cells_for_unchanged_submissions() -> None:
+    dataset_id, (task_id,) = _insert_dataset(task_count=1)
+    alice_owner = _insert_user("alice")
+    bob_owner = _insert_user("bob")
+    yx_owner = _insert_user("yx")
+    alice_submission = _insert_submission(alice_owner, finalized_at="2026-06-01T00:10:00+00:00")
+    bob_submission = _insert_submission(bob_owner, finalized_at="2026-06-01T00:20:00+00:00")
+    alice_job = _insert_generation_job(alice_submission, dataset_id, task_id, status="succeeded")
+    bob_job = _insert_generation_job(bob_submission, dataset_id, task_id, status="succeeded")
+    with connect() as db:
+        for job_id in (alice_job, bob_job):
+            db.execute(
+                """
+                update jobs
+                set preview_s3_key = ?, artifact_s3_prefix = ?, completed_at = ?, updated_at = ?
+                where id = ?
+                """,
+                (
+                    f"jobs/{job_id}/generation/preview/index.html",
+                    f"jobs/{job_id}/generation/artifacts",
+                    "2026-06-01T00:30:00+00:00",
+                    "2026-06-01T00:30:00+00:00",
+                    job_id,
+                ),
+            )
+    first_round = rounds.open_round(
+        "First Round",
+        starts_at="2026-06-01T00:00:00+00:00",
+        ends_at="2026-06-01T01:00:00+00:00",
+    )["id"]
+    rounds.close_round(first_round)
+    rounds.start_peer_review(first_round)
+
+    with connect() as db:
+        first_review_jobs = db.execute(
+            """
+            select id, generator_submission_id
+            from jobs
+            where round_id = ? and job_type = 'peer_evaluation'
+            """,
+            (first_round,),
+        ).fetchall()
+    assert len(first_review_jobs) == 2
+    for job in first_review_jobs:
+        evaluator.complete_job(
+            job["id"],
+            {
+                "result": {
+                    "score": 86 if job["generator_submission_id"] == alice_submission else 87,
+                    "max_score": 100,
+                },
+                "evaluation_report_s3_key": f"jobs/{job['id']}/evaluation/report.json",
+                "evaluation_trajectory_s3_key": f"jobs/{job['id']}/evaluation/trajectory.jsonl",
+                "started_at": "2026-06-01T01:00:00+00:00",
+                "completed_at": "2026-06-01T01:00:02+00:00",
+                "run_seconds": 2.0,
+            },
+        )
+
+    yx_submission = _insert_submission(yx_owner, finalized_at="2026-06-01T01:10:00+00:00")
+    yx_job = _insert_generation_job(yx_submission, dataset_id, task_id, status="succeeded")
+    with connect() as db:
+        db.execute(
+            """
+            update jobs
+            set preview_s3_key = ?, artifact_s3_prefix = ?, completed_at = ?, updated_at = ?
+            where id = ?
+            """,
+            (
+                f"jobs/{yx_job}/generation/preview/index.html",
+                f"jobs/{yx_job}/generation/artifacts",
+                "2026-06-01T01:20:00+00:00",
+                "2026-06-01T01:20:00+00:00",
+                yx_job,
+            ),
+        )
+    second_round = rounds.open_round(
+        "Second Round",
+        starts_at="2026-06-01T01:00:00+00:00",
+        ends_at="2026-06-01T02:00:00+00:00",
+    )["id"]
+    rounds.close_round(second_round)
+    detail = rounds.start_peer_review(second_round)
+
+    with connect() as db:
+        queued_jobs = db.execute(
+            """
+            select submission_id, generator_submission_id, review_target_job_id
+            from jobs
+            where round_id = ? and job_type = 'peer_evaluation'
+            order by submission_id, generator_submission_id
+            """,
+            (second_round,),
+        ).fetchall()
+        carried = db.execute(
+            """
+            select artifact_job_id, evaluator_submission_id, score, source_evaluation_id,
+                   carried_from_round_id, is_carried_forward
+            from evaluations
+            where round_id = ? and is_carried_forward = 1
+            order by artifact_job_id, evaluator_submission_id
+            """,
+            (second_round,),
+        ).fetchall()
+        all_evaluations = db.execute("select status from evaluations where round_id = ?", (second_round,)).fetchall()
+
+    assert detail["status"] == "peer_review"
+    assert len(queued_jobs) == 4
+    assert len(all_evaluations) == 6
+    assert {(row["artifact_job_id"], row["evaluator_submission_id"], row["score"]) for row in carried} == {
+        (alice_job, bob_submission, 86.0),
+        (bob_job, alice_submission, 87.0),
+    }
+    assert {row["carried_from_round_id"] for row in carried} == {first_round}
+    assert all(row["source_evaluation_id"] for row in carried)
+    assert {row["is_carried_forward"] for row in carried} == {1}
+    assert {(row["generator_submission_id"], row["submission_id"]) for row in queued_jobs} == {
+        (alice_submission, yx_submission),
+        (bob_submission, yx_submission),
+        (yx_submission, alice_submission),
+        (yx_submission, bob_submission),
+    }

@@ -140,6 +140,9 @@ def init_db() -> None:
               evaluation_report_s3_key text,
               evaluation_trajectory_s3_key text,
               run_seconds real,
+              source_evaluation_id text,
+              carried_from_round_id text,
+              is_carried_forward integer not null default 0,
               error text,
               created_at text not null,
               completed_at text,
@@ -174,11 +177,17 @@ def init_db() -> None:
         _add_column(db, "jobs", "run_seconds real")
         _add_column(db, "jobs", "generation_run_seconds real")
         _add_column(db, "jobs", "self_evaluation_run_seconds real")
+        _add_column(db, "evaluations", "source_evaluation_id text")
+        _add_column(db, "evaluations", "carried_from_round_id text")
+        _add_column(db, "evaluations", "is_carried_forward integer not null default 0")
         db.executescript(
             """
             create index if not exists idx_jobs_round_type on jobs(round_id, job_type);
             create index if not exists idx_evaluations_round_artifact on evaluations(round_id, artifact_job_id);
             create index if not exists idx_evaluations_evaluator_sub on evaluations(evaluator_submission_id);
+            create index if not exists idx_evaluations_reuse_lookup on evaluations(
+              artifact_job_id, evaluator_type, evaluator_submission_id, status
+            );
             create index if not exists idx_round_participants_user on round_participants(user_id);
             create unique index if not exists idx_evaluations_unique on evaluations(
               round_id, artifact_job_id, evaluator_type, evaluator_submission_id
