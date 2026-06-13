@@ -65,7 +65,10 @@ def init(
 
     typer.echo(f"Scaffolded agent template in {directory}")
     typer.echo(f"  Next: cd {directory}")
-    typer.echo("        edit agent.py, then test locally with your OPENAI_API_KEY")
+    typer.echo('        vis-arena submit . --name "my-agent-v1"')
+    typer.echo("        vis-arena submissions watch <submission-id>")
+    typer.echo("  Optional local test: add OPENAI_API_KEY to .env, then run")
+    typer.echo("        vis-arena local run . --dataset ieee-vis-publications")
 
 
 @app.command()

@@ -6,7 +6,8 @@ import uuid
 from typing import Any
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import HTTPException
 
 from .db import connect, now_iso, row_to_dict
@@ -106,7 +107,11 @@ def _submission_token_total(submission_id: str) -> int:
 
 def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int, model_id: str) -> dict[str, Any]:
     body = _anthropic_body(payload.messages, payload.tools, payload.tool_choice, max_tokens)
-    client = boto3.client("bedrock-runtime", region_name=settings.bedrock_region)
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=settings.bedrock_region,
+        config=Config(read_timeout=settings.bedrock_read_timeout_seconds),
+    )
     try:
         response = client.invoke_model(
             modelId=model_id,
@@ -117,6 +122,8 @@ def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int, model_id: str) 
     except ClientError as exc:
         message = exc.response.get("Error", {}).get("Message") or str(exc)
         raise HTTPException(status_code=502, detail=f"Bedrock invoke failed: {message}") from exc
+    except BotoCoreError as exc:
+        raise HTTPException(status_code=502, detail=f"Bedrock invoke failed: {exc}") from exc
     raw = json.loads(response["body"].read())
     usage = raw.get("usage") or {}
     return {
