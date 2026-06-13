@@ -69,8 +69,9 @@ Use a brief ReAct workflow:
 
 Do not load the raw dataset during evaluation.
 
-Score on 100 points across five criteria. Each rated 1-5 on the anchors
-below; score = anchor x 4; five criteria x max_score 20 = 100. Required ids:
+Rate each of the five criteria 1-5 using the anchors below. For each criterion
+set "score" to that 1-5 level and "max_score" to 5. The overall "score" is the
+sum of the five levels x 4 (so 0-100), with overall "max_score" = 100. Required ids:
 
 1. data_fidelity - do displayed values, totals, and trends look internally
    consistent and match what the task asks for?
@@ -105,9 +106,9 @@ below; score = anchor x 4; five criteria x max_score 20 = 100. Required ids:
      analysis.
 
 Attach short evidence strings (DOM, screenshot, console, interaction) per
-criterion. Finish with JSON: score, max_score = 100, summary, criteria (5
-items with the ids above, each with score, max_score, anchor, evidence),
-browser, artifacts, metadata."""
+criterion. Finish with JSON: score (0-100), max_score = 100, summary, criteria
+(5 items with the ids above, each with score 1-5, max_score = 5, anchor,
+evidence), browser, artifacts, metadata."""
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import textwrap
 import time
 import socketserver
 import threading
@@ -183,6 +184,8 @@ def submissions_watch(
     client = _client(server_url, token)
     started = time.monotonic()
     last_line = None
+    preview_shown = False
+    report_shown = False
     try:
         while True:
             submission = client.get_submission(submission_id)
@@ -192,8 +195,20 @@ def submissions_watch(
             if line != last_line:
                 typer.echo(line)
                 last_line = line
+
+            # Preview is ready as soon as the generate phase finishes — don't wait for
+            # the (separate, slower) self-evaluation to complete.
+            if not preview_shown and any(job.get("preview_s3_key") for job in jobs):
+                typer.echo("  generated — preview (self-evaluation still running):")
+                _print_submission_preview_urls(client, jobs)
+                preview_shown = True
+
+            # Self-evaluation report once the agent has written it.
+            if not report_shown and _print_self_eval_report(client, jobs):
+                report_shown = True
+
             if submission.status in {"succeeded", "failed", "cancelled"}:
-                if submission.status == "succeeded":
+                if submission.status == "succeeded" and not preview_shown:
                     _print_submission_preview_urls(client, jobs)
                 elif _job_errors(jobs):
                     typer.echo(_job_errors(jobs), err=True)
@@ -283,6 +298,28 @@ def _print_submission_preview_urls(client: VisArenaClient, jobs: list[dict]) -> 
     for job in preview_jobs:
         prefix = f"{job.get('task_id')}: " if len(preview_jobs) > 1 and job.get("task_id") else ""
         typer.echo(prefix + client.get_job_preview_url(str(job["id"])))
+
+
+def _print_self_eval_report(client: VisArenaClient, jobs: list[dict]) -> bool:
+    """Print the self-evaluation score + summary once the report is available."""
+    report_jobs = [
+        job
+        for job in jobs
+        if job.get("evaluation_report_s3_key") and (job.get("job_type") or "generation") == "generation"
+    ]
+    printed = False
+    for job in report_jobs:
+        try:
+            report = client.get_job_evaluation_report(str(job["id"]))
+        except Exception:
+            continue
+        prefix = f"{job.get('task_id')} " if len(report_jobs) > 1 and job.get("task_id") else ""
+        typer.echo(f"  self-eval {prefix}{report.get('score')}/{report.get('max_score')}")
+        summary = report.get("summary")
+        if summary:
+            typer.echo(textwrap.fill(str(summary), width=88, initial_indent="    ", subsequent_indent="    "))
+        printed = True
+    return printed
 
 
 def _job_errors(jobs: list[dict]) -> str:

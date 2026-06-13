@@ -153,6 +153,9 @@ class VisArenaClient:
     def get_job_preview_url(self, job_id: str) -> str:
         return str(self._request("GET", f"/v1/jobs/{job_id}/preview-url").json()["url"])
 
+    def get_job_evaluation_report(self, job_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/v1/jobs/{job_id}/evaluation-report").json()
+
     def wait_for_submission(self, submission_id: str, poll_seconds: float = 5.0, timeout_seconds: float = 900.0) -> Submission:
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
