@@ -192,6 +192,17 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
             (submission_id, submission_id),
         ).fetchall()
         usage_by_job = _llm_usage_by_job(db, [row["id"] for row in rows])
+        # Position in the serial worker's queue, so participants see "N ahead" while waiting.
+        # The worker claims generation jobs first (then by created_at), so a queued generation
+        # job waits behind the running job plus any earlier-queued generation jobs.
+        queued_generation_ids = [
+            r["id"]
+            for r in db.execute(
+                "select id from jobs where status = 'queued' and coalesce(job_type, 'generation') = 'generation' order by created_at"
+            ).fetchall()
+        ]
+        running_offset = 1 if db.execute("select 1 from jobs where status = 'running' limit 1").fetchone() else 0
+    queue_ahead_by_id = {job_id: index + running_offset for index, job_id in enumerate(queued_generation_ids)}
     items = []
     for row in rows:
         item = dict(row)
@@ -202,6 +213,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
         item["usage_by_purpose"] = usage["by_purpose"]
         item["generation_usage"] = usage["by_purpose"].get("generation", _empty_usage())
         item["self_evaluation_usage"] = usage["by_purpose"].get("evaluation", _empty_usage())
+        item["queue_ahead"] = queue_ahead_by_id.get(item["id"])
         items.append(item)
     return {"items": items}
 
