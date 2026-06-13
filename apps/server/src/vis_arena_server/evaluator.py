@@ -16,6 +16,7 @@ from .db import connect, now_iso, row_to_dict
 from .rounds import (
     EVALUATION_JOB_TYPES,
     advance_due_rounds,
+    combined_submission_score,
     complete_round_if_ready,
     maybe_open_next_round,
     queue_central_evaluation_for_generation,
@@ -736,37 +737,9 @@ def _update_generator_submission_rollup(db, submission_id: str | None, now: str)
     ).fetchone()["count"]
 
     if pending_generations == 0 and succeeded_generations > 0 and pending_reviews == 0:
-        peer_scores = _job_scores(
-            db,
-            """
-            select json_extract(result_json, '$.score') as score
-            from jobs
-            where job_type in ('peer_review', 'peer_evaluation')
-              and generator_submission_id = ?
-              and status = 'succeeded'
-            """,
-            (submission_id,),
-        )
-        generation_scores = _job_scores(
-            db,
-            """
-            select json_extract(result_json, '$.score') as score
-            from jobs
-            where coalesce(job_type, 'generation') = 'generation'
-              and submission_id = ?
-              and status = 'succeeded'
-            """,
-            (submission_id,),
-        )
-        scores = peer_scores or generation_scores
-        average = sum(scores) / len(scores) if scores else None
-        db.execute("update submissions set status = ?, score = ? where id = ?", ("succeeded", average, submission_id))
+        db.execute("update submissions set status = ?, score = ? where id = ?", ("succeeded", combined_submission_score(db, submission_id), submission_id))
     elif succeeded_generations > 0 or pending_generations > 0:
         db.execute("update submissions set status = ? where id = ?", ("running", submission_id))
-
-
-def _job_scores(db, query: str, params: tuple[str, ...]) -> list[float]:
-    return [float(row["score"]) for row in db.execute(query, params) if row["score"] is not None]
 
 
 def complete_job(job_id: str, result: dict[str, Any]) -> None:

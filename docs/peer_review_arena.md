@@ -49,11 +49,10 @@ already created.
 
 ## Scoring
 
-A generator submission's score is the average of all successful peer-review
-scores across its generated artifacts. Failed peer reviews are ignored for the
-average. If at least one generation job succeeds but no peer reviews succeed,
-the submission succeeds with `score = null`. If all generation jobs fail, the
-submission fails.
+A generator submission's score averages successful self-review and peer-review
+scores per artifact, then averages artifacts so each task has equal weight.
+Failed and pending evaluations are ignored. Central judge scores are stored as
+separate evaluation records and do not affect the leaderboard score.
 
 ## Rate Limit
 

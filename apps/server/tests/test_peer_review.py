@@ -154,6 +154,49 @@ def _complete_generation(job_id: str) -> None:
     )
 
 
+def _insert_evaluation(
+    *,
+    artifact_job_id: str,
+    evaluator_type: str,
+    evaluator_submission_id: str,
+    evaluator_user_id: str,
+    score: float,
+    round_id: str = "legacy",
+    status: str = "succeeded",
+) -> str:
+    evaluation_id = _id("eval")
+    with connect() as db:
+        db.execute(
+            """
+            insert into evaluations (
+              id, round_id, artifact_job_id, evaluator_type, evaluator_user_id,
+              evaluator_submission_id, evaluator_name, job_id, status, score,
+              max_score, result_json, run_seconds, created_at, completed_at, updated_at
+            )
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                evaluation_id,
+                round_id,
+                artifact_job_id,
+                evaluator_type,
+                evaluator_user_id,
+                evaluator_submission_id,
+                evaluator_user_id,
+                _id("eval-job"),
+                status,
+                score,
+                100,
+                json.dumps({"score": score, "max_score": 100}),
+                1.0,
+                now_iso(),
+                now_iso(),
+                now_iso(),
+            ),
+        )
+    return evaluation_id
+
+
 def test_generation_completion_stores_phase_and_self_evaluation_runtime() -> None:
     owner_id = _insert_user()
     dataset_id, (task_id,) = _insert_dataset()
@@ -591,41 +634,52 @@ def test_new_submission_does_not_backfill_existing_artifact_reviews() -> None:
     assert [row["submission_id"] for row in reviews] == [reviewer_submission]
 
 
-def test_rollup_averages_successful_peer_reviews_and_ignores_failures() -> None:
+def test_rollup_averages_successful_self_and_peer_evaluations_and_ignores_failures() -> None:
     owner = _insert_user()
     reviewer_owner = _insert_user()
+    second_reviewer_owner = _insert_user()
     dataset_id, (task_id,) = _insert_dataset()
     submission = _insert_submission(owner, status="running", finalized_at="2026-06-01T00:00:00+00:00")
     generation = _insert_generation_job(submission, dataset_id, task_id, status="succeeded")
+
+    _insert_evaluation(
+        artifact_job_id=generation,
+        evaluator_type="self",
+        evaluator_submission_id=submission,
+        evaluator_user_id=owner,
+        score=80,
+    )
+    _insert_evaluation(
+        artifact_job_id=generation,
+        evaluator_type="peer",
+        evaluator_submission_id=_id("reviewer-sub"),
+        evaluator_user_id=reviewer_owner,
+        score=100,
+        round_id=_id("round"),
+    )
+    _insert_evaluation(
+        artifact_job_id=generation,
+        evaluator_type="peer",
+        evaluator_submission_id=_id("reviewer-sub"),
+        evaluator_user_id=second_reviewer_owner,
+        score=60,
+        round_id=_id("round"),
+    )
+    _insert_evaluation(
+        artifact_job_id=generation,
+        evaluator_type="peer",
+        evaluator_submission_id=_id("reviewer-sub"),
+        evaluator_user_id=second_reviewer_owner,
+        score=0,
+        round_id=_id("round"),
+        status="failed",
+    )
     with connect() as db:
-        for score in (80, 100):
-            db.execute(
-                """
-                insert into jobs (
-                  id, submission_id, job_type, generator_submission_id,
-                  review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
-                  dataset_id, task_id, status, result_json, created_at, updated_at
-                )
-                values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (_id("review"), _id("reviewer-sub"), "peer_review", submission, generation, reviewer_owner, now_iso(), dataset_id, task_id, "succeeded", json.dumps({"score": score}), now_iso(), now_iso()),
-            )
-        db.execute(
-            """
-            insert into jobs (
-              id, submission_id, job_type, generator_submission_id,
-              review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
-              dataset_id, task_id, status, error, created_at, updated_at
-            )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (_id("review"), _id("reviewer-sub"), "peer_review", submission, generation, reviewer_owner, now_iso(), dataset_id, task_id, "failed", "bad review", now_iso(), now_iso()),
-        )
         evaluator._update_generator_submission_rollup(db, submission, now_iso())
         row = db.execute("select status, score from submissions where id = ?", (submission,)).fetchone()
 
     assert row["status"] == "succeeded"
-    assert row["score"] == 90
+    assert row["score"] == 80
 
 
 def test_rollup_succeeds_with_null_score_when_no_peer_review_succeeds() -> None:
@@ -865,6 +919,20 @@ def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_score
                     job_id,
                 ),
             )
+    _insert_evaluation(
+        artifact_job_id=first_job,
+        evaluator_type="self",
+        evaluator_submission_id=first_submission,
+        evaluator_user_id=first_owner,
+        score=88,
+    )
+    _insert_evaluation(
+        artifact_job_id=second_job,
+        evaluator_type="self",
+        evaluator_submission_id=second_submission,
+        evaluator_user_id=second_owner,
+        score=87,
+    )
     round_id = rounds.open_round(
         "Peer Round",
         starts_at="2026-06-01T00:00:00+00:00",
@@ -906,11 +974,10 @@ def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_score
             assert job["generator_submission_id"] == first_submission
 
     for job in review_jobs:
-        score = 90 if job["generator_submission_id"] == first_submission else 70
         evaluator.complete_job(
             job["id"],
             {
-                "result": {"score": score, "max_score": 100},
+                "result": {"score": 86, "max_score": 100},
                 "evaluation_report_s3_key": f"jobs/{job['id']}/evaluation/report.json",
                 "evaluation_trajectory_s3_key": f"jobs/{job['id']}/evaluation/trajectory.jsonl",
                 "started_at": "2026-06-01T01:00:00+00:00",
@@ -928,11 +995,11 @@ def test_round_peer_review_queues_cross_user_evaluations_once_and_rolls_up_score
 
     assert completed_round["status"] == "complete"
     assert {item["submission_id"]: item["round_score"] for item in leaderboard} == {
-        first_submission: 90.0,
-        second_submission: 70.0,
+        first_submission: 87.0,
+        second_submission: 86.5,
     }
-    assert dict(first_row) == {"status": "succeeded", "score": 90.0}
-    assert dict(second_row) == {"status": "succeeded", "score": 70.0}
+    assert dict(first_row) == {"status": "succeeded", "score": 87.0}
+    assert dict(second_row) == {"status": "succeeded", "score": 86.5}
     assert {row["status"] for row in stored_evals} == {"succeeded"}
     assert {row["run_seconds"] for row in stored_evals} == {2.0}
     assert all(row["evaluation_report_s3_key"] for row in stored_evals)

@@ -543,22 +543,88 @@ def complete_round_if_ready(round_id: str) -> dict[str, Any] | None:
     return get_round(round_id)
 
 
+def combined_submission_score(db, submission_id: str) -> float | None:
+    row = db.execute(
+        """
+        with latest_evaluations as (
+          select *
+          from (
+            select evaluations.*,
+                   row_number() over (
+                     partition by artifact_job_id, evaluator_type, evaluator_submission_id
+                     order by completed_at desc, created_at desc
+                   ) as rn
+            from evaluations
+            where evaluations.status = 'succeeded'
+              and evaluations.evaluator_type in ('self', 'peer')
+              and evaluations.score is not null
+          )
+          where rn = 1
+        ),
+        artifact_scores as (
+          select jobs.id as artifact_job_id,
+                 avg(latest_evaluations.score) as artifact_score
+          from jobs
+          left join latest_evaluations
+            on latest_evaluations.artifact_job_id = jobs.id
+          where jobs.submission_id = ?
+            and coalesce(jobs.job_type, 'generation') = 'generation'
+            and jobs.status = 'succeeded'
+          group by jobs.id
+        )
+        select avg(artifact_score) as score
+        from artifact_scores
+        where artifact_score is not null
+        """,
+        (submission_id,),
+    ).fetchone()
+    return float(row["score"]) if row and row["score"] is not None else None
+
+
 def round_leaderboard(round_id: str, limit: int = 100) -> list[dict[str, Any]]:
     with connect() as db:
         rows = db.execute(
             """
-            with artifact_scores as (
-              select j.submission_id,
-                     e.artifact_job_id,
-                     coalesce(
-                       avg(case when e.evaluator_type='peer' and e.status='succeeded' then e.score end),
-                       avg(case when e.evaluator_type='central' and e.status='succeeded' then e.score end),
-                       avg(case when e.evaluator_type='self' and e.status='succeeded' then e.score end)
-                     ) as artifact_score
-              from evaluations e
-              join jobs j on j.id = e.artifact_job_id
-              where e.round_id = ?
-              group by j.submission_id, e.artifact_job_id
+            with round_artifacts as (
+              select *
+              from (
+                select jobs.id as artifact_job_id,
+                       jobs.submission_id,
+                       row_number() over (
+                         partition by jobs.submission_id, jobs.dataset_id, jobs.task_id
+                         order by jobs.completed_at desc, jobs.created_at desc
+                       ) as rn
+                from jobs
+                join round_participants
+                  on round_participants.submission_id = jobs.submission_id
+                 and round_participants.round_id = ?
+                where coalesce(jobs.job_type, 'generation') = 'generation'
+                  and jobs.status = 'succeeded'
+                  and jobs.preview_s3_key is not null
+              )
+              where rn = 1
+            ),
+            artifact_scores as (
+              select round_artifacts.submission_id,
+                     round_artifacts.artifact_job_id,
+                     avg(evaluations.score) as artifact_score,
+                     sum(
+                       case
+                         when evaluations.evaluator_type = 'peer'
+                          and evaluations.round_id = ?
+                         then 1 else 0
+                       end
+                     ) as peer_count
+              from round_artifacts
+              left join evaluations
+                on evaluations.artifact_job_id = round_artifacts.artifact_job_id
+               and evaluations.status = 'succeeded'
+               and evaluations.score is not null
+               and (
+                 evaluations.evaluator_type = 'self'
+                 or (evaluations.evaluator_type = 'peer' and evaluations.round_id = ?)
+               )
+              group by round_artifacts.submission_id, round_artifacts.artifact_job_id
             )
             select submissions.id as submission_id,
                    submissions.name as submission_name,
@@ -569,11 +635,12 @@ def round_leaderboard(round_id: str, limit: int = 100) -> list[dict[str, Any]]:
             join submissions on submissions.id = artifact_scores.submission_id
             join users on users.id = submissions.owner_id
             where artifact_scores.artifact_score is not null
+              and artifact_scores.peer_count > 0
             group by submissions.id, submissions.name, users.id, users.name
             order by round_score desc
             limit ?
             """,
-            (round_id, limit),
+            (round_id, round_id, round_id, limit),
         ).fetchall()
     return [dict(row) for row in rows]
 
