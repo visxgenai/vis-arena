@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vis-arena-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python SDK and CLI for Vis Arena"
 requires-python = ">=3.11"
 dependencies = [

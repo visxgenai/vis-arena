@@ -144,6 +144,7 @@ def _upload_submission(path: Path, name: str, dataset_id: Optional[str] = None, 
         if dataset_id:
             typer.echo("--dataset is deprecated and ignored; submissions run against all active public datasets.", err=True)
         typer.echo(f"Submission {submission.id} queued for all active public datasets.")
+        typer.echo("  Generation may take a few minutes, depending on your agent's execution.")
         typer.echo(f"  Track progress:  vis-arena submissions watch {submission.id}")
         typer.echo(f"  Preview artifact: vis-arena submissions preview {submission.id}")
     finally:
@@ -208,8 +209,12 @@ def submissions_watch(
                 report_shown = True
 
             if submission.status in {"succeeded", "failed", "cancelled"}:
-                if submission.status == "succeeded" and not preview_shown:
-                    _print_submission_preview_urls(client, jobs)
+                if submission.status == "succeeded":
+                    if not preview_shown:
+                        _print_submission_preview_urls(client, jobs)
+                    typer.echo(
+                        f"  View your artifacts on the website: sign in at {client.base_url}/submission"
+                    )
                 elif _job_errors(jobs):
                     typer.echo(_job_errors(jobs), err=True)
                 return
