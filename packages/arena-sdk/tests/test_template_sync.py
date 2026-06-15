@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 VENDORED = Path(__file__).resolve().parents[1] / "src" / "vis_arena_sdk" / "templates" / "python"
 SOURCE = REPO_ROOT / "submissions" / "python-template"
 
-SHARED_FILES = ["agent.py", "example_agent.py", "agent.md", "submission.yaml", "pyproject.toml", "README.md"]
+SHARED_FILES = ["agent.py", "example_agent.py", "llm_client.py", "agent.md", "submission.yaml", "pyproject.toml", "README.md"]
 
 
 def test_vendored_template_matches_source() -> None:

@@ -15,6 +15,8 @@ Three integration patterns:
 
 Env vars:  OPENAI_API_KEY (local; you set)
            VIS_ARENA_* (cloud; worker-injected, never set yourself)
+
+LLM call routing (local OpenAI vs arena cloud broker) lives in llm_client.py.
 """
 from __future__ import annotations
 
@@ -26,23 +28,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from openai import OpenAI
+from llm_client import make_llm_client
 
 
-# Cloud jobs inject VIS_ARENA_LLM_MODEL (default) and VIS_ARENA_LLM_MODELS (full list).
-# Current arena cloud roster (set VIS_ARENA_LLM_MODEL to pick one):
-#   global.anthropic.claude-haiku-4-5-20251001-v1:0   default  (cheapest)
-#   global.anthropic.claude-sonnet-4-5-20250929-v1:0  available (balanced)
-#   global.anthropic.claude-opus-4-8                  available (highest quality, priciest)
-#   global.anthropic.claude-opus-4-7                  available
-# Run `./agent.py models` in a job to print the live model list.
-LOCAL_DEFAULT_MODEL = "gpt-5.5"
-
-DEFAULT_MODEL = (
-    os.environ.get("VIS_ARENA_LLM_MODEL")
-    or os.environ.get("VIS_ARENA_OPENAI_MODEL")
-    or LOCAL_DEFAULT_MODEL
-)
+# Choose your model in code: pass model=... per LLM call (see client.create below), or edit these.
+# Arena cloud allow-list: haiku-4-5 (cheapest), sonnet-4-5 (balanced), opus-4-8/4-7 (priciest).
+# `./agent.py models` prints the live allowed list. Call wrappers live in llm_client.py.
+CLOUD_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+LOCAL_MODEL = "gpt-5.5"
+# Cloud jobs set VIS_ARENA_JOB_ID; local runs don't.
+DEFAULT_MODEL = CLOUD_MODEL if os.environ.get("VIS_ARENA_JOB_ID") else LOCAL_MODEL
 
 
 GENERATION_PROMPT = """You are a web data visualization agent.
@@ -135,7 +130,7 @@ def models() -> dict[str, Any]:
     return {
         "default_model": DEFAULT_MODEL,
         "available_models": available,
-        "select_model": "Set VIS_ARENA_LLM_MODEL to one of available_models.",
+        "select_model": "Pass model=<one of available_models> on each LLM call; the arena sets the default + allow-list.",
     }
 
 
@@ -158,12 +153,12 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Tool loop, LLM client, and tools — replace freely.
+# Tool loop and tools — replace freely. (LLM call wrappers are in llm_client.py.)
 # ---------------------------------------------------------------------------
 
 def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpose: str) -> dict[str, Any]:
     print(f"[agent] {purpose}: model={DEFAULT_MODEL}", file=sys.stderr)
-    client = _make_llm_client(purpose)
+    client = make_llm_client(purpose)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -210,6 +205,8 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
     ]
 
     while True:
+        # model=... is per call — pass any allowed model here (e.g. a cheaper model for
+        # planning steps and a pricier one for the final render). DEFAULT_MODEL is just a default.
         message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice="auto")
         messages.append(message)
         calls = message.get("tool_calls") or []
@@ -236,76 +233,6 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
         if purpose == "generation" and (tool_root / "dist" / "index.html").exists():
             messages.append({"role": "user", "content": "dist/index.html exists. Verify only if needed, then call finish."})
-
-
-class OpenAIChatClient:
-    def __init__(self) -> None:
-        self.client = OpenAI()
-
-    def create(
-        self,
-        *,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        tool_choice: str | dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        kwargs: dict[str, Any] = {"model": model, "messages": messages, "max_tokens": 8192}
-        if tools:
-            kwargs["tools"] = tools
-            if tool_choice is not None:
-                kwargs["tool_choice"] = tool_choice
-        response = self.client.chat.completions.create(**kwargs)
-        return response.choices[0].message.model_dump(exclude_none=True)
-
-
-class ArenaChatClient:
-    def __init__(self, purpose: str) -> None:
-        from vis_arena_sdk import VisArenaClient
-
-        self.job_id = os.environ["VIS_ARENA_JOB_ID"]
-        self.purpose = purpose
-        self.client = VisArenaClient(
-            base_url=os.environ.get("VIS_ARENA_SERVER_URL", "http://host.docker.internal:8000"),
-            token=os.environ["VIS_ARENA_API_TOKEN"],
-            # Bedrock can take several minutes when returning a large
-            # tool call that writes the final HTML artifact.
-            timeout=600.0,
-        )
-
-    def create(
-        self,
-        *,
-        model: str,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        tool_choice: str | dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        response = self.client.create_llm_message(
-            job_id=self.job_id,
-            messages=messages,
-            tools=tools,
-            tool_choice=tool_choice,
-            model=model,
-            purpose=self.purpose,
-            max_tokens=8192,
-        )
-        return response.message
-
-
-def _make_llm_client(purpose: str) -> OpenAIChatClient | ArenaChatClient:
-    # Cloud: the arena worker injects VIS_ARENA_API_TOKEN + VIS_ARENA_JOB_ID and
-    # the agent routes model calls through the arena backend (no provider key
-    # needed). Local: you set OPENAI_API_KEY.
-    if os.environ.get("VIS_ARENA_API_TOKEN") and os.environ.get("VIS_ARENA_JOB_ID") and not os.environ.get("OPENAI_API_KEY"):
-        return ArenaChatClient(purpose)
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit(
-            "OPENAI_API_KEY is not set.\n"
-            "  Local testing: export OPENAI_API_KEY=sk-... and re-run.\n"
-            "  Submitting:   run `vis-arena submit . --dataset ieee-vis-publications`; the arena provides the key."
-        )
-    return OpenAIChatClient()
 
 
 def _run_bash(command: str, cwd: Path) -> str:
