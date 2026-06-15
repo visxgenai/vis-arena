@@ -3,10 +3,10 @@
 Replace with your own agent — keep these function names and signatures and
 `agent.py` keeps working. See agent.md for the full contract.
 
-    info()                              -> dict
-    models()                            -> dict   # optional
-    generate(workdir)                   -> dict   # writes source/, dist/index.html
-    evaluate(workdir, artifact_url)     -> dict   # score + criteria
+    info()                              -> dict   # required: describe your agent
+    models()                            -> dict   # optional: list models you can use
+    generate(workdir)                   -> dict   # required: build the artifact
+    evaluate(workdir, artifact_url)     -> dict   # required: score it
 
 Three integration patterns:
   - Import an existing Python package and call it inside the hooks.
@@ -32,8 +32,9 @@ from llm_client import make_llm_client
 
 
 # Choose your model in code: pass model=... per LLM call (see client.create below), or edit these.
-# Arena cloud allow-list: haiku-4-5 (cheapest), sonnet-4-5 (balanced), opus-4-8/4-7 (priciest).
-# `./agent.py models` prints the live allowed list. Call wrappers live in llm_client.py.
+# Arena cloud allow-list (snapshot; `./agent.py models` prints the live list):
+#   haiku-4-5 (cheapest), sonnet-4-5 (balanced), opus-4-8/4-7 (priciest).
+# Call wrappers live in llm_client.py.
 CLOUD_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 LOCAL_MODEL = "gpt-5.5"
 # Cloud jobs set VIS_ARENA_JOB_ID; local runs don't.
@@ -116,6 +117,7 @@ evidence), browser, artifacts, metadata."""
 # ---------------------------------------------------------------------------
 
 def info() -> dict[str, Any]:
+    """Required. Describe your agent (name, version). The arena records it each run."""
     return {
         "name": "python-openai-template",
         "version": "0.3.0",
@@ -126,6 +128,7 @@ def info() -> dict[str, Any]:
 
 
 def models() -> dict[str, Any]:
+    """Optional. Lists the cloud models you can use — run `./agent.py models`."""
     available = [m.strip() for m in os.environ.get("VIS_ARENA_LLM_MODELS", DEFAULT_MODEL).split(",") if m.strip()]
     return {
         "default_model": DEFAULT_MODEL,
