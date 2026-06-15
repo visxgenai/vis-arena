@@ -29,10 +29,12 @@ from typing import Any
 from openai import OpenAI
 
 
-# Cloud jobs inject VIS_ARENA_LLM_MODEL and VIS_ARENA_LLM_MODELS.
-# Current arena cloud roster:
-#   global.anthropic.claude-opus-4-8  default
-#   global.anthropic.claude-opus-4-7  fallback
+# Cloud jobs inject VIS_ARENA_LLM_MODEL (default) and VIS_ARENA_LLM_MODELS (full list).
+# Current arena cloud roster (set VIS_ARENA_LLM_MODEL to pick one):
+#   global.anthropic.claude-haiku-4-5-20251001-v1:0   default  (cheapest)
+#   global.anthropic.claude-sonnet-4-5-20250929-v1:0  available (balanced)
+#   global.anthropic.claude-opus-4-8                  available (highest quality, priciest)
+#   global.anthropic.claude-opus-4-7                  available
 # Run `./agent.py models` in a job to print the live model list.
 LOCAL_DEFAULT_MODEL = "gpt-5.5"
 
