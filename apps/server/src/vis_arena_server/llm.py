@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import uuid
 from typing import Any
@@ -58,7 +59,7 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
 
     usage = bedrock["usage"]
     total_tokens = usage["input_tokens"] + usage["output_tokens"]
-    estimated_cost = _estimated_cost_usd(usage["input_tokens"], usage["output_tokens"])
+    estimated_cost = _estimated_cost_usd(bedrock["model"], usage["input_tokens"], usage["output_tokens"])
     _record_usage(
         job_id=payload.job_id,
         submission_id=context["submission_id"],
@@ -297,10 +298,49 @@ def _record_usage(
         )
 
 
-def _estimated_cost_usd(input_tokens: int, output_tokens: int) -> float | None:
-    if settings.llm_input_usd_per_1m <= 0 and settings.llm_output_usd_per_1m <= 0:
+# Bedrock list price per 1M tokens (input, output), matched by family substring against the
+# (lowercased) model id — robust to id variants (global./us. prefixes, date stamps). Approximate;
+# verify on the AWS Bedrock pricing page, or override at runtime with VIS_ARENA_MODEL_PRICES
+# (JSON: {"family": [input_per_1m, output_per_1m]}). Unknown families fall back to the legacy
+# global price pair (which defaults to 0 -> cost recorded as null).
+_DEFAULT_MODEL_PRICES_USD_PER_1M: dict[str, tuple[float, float]] = {
+    "opus": (15.0, 75.0),
+    "sonnet": (3.0, 15.0),
+    "haiku": (1.0, 5.0),
+    "deepseek": (1.35, 5.40),  # approx — verify on the Bedrock pricing page
+    "kimi": (0.60, 2.50),      # approx (moonshotai.kimi-*) — verify
+    "moonshot": (0.60, 2.50),
+}
+
+
+def _load_model_prices() -> dict[str, tuple[float, float]]:
+    prices = dict(_DEFAULT_MODEL_PRICES_USD_PER_1M)
+    raw = os.environ.get("VIS_ARENA_MODEL_PRICES")
+    if raw:
+        try:
+            for family, pair in json.loads(raw).items():
+                prices[str(family).lower()] = (float(pair[0]), float(pair[1]))
+        except (ValueError, TypeError, KeyError, IndexError):
+            pass  # malformed override -> keep defaults
+    return prices
+
+
+_MODEL_PRICES_USD_PER_1M = _load_model_prices()
+
+
+def _model_prices(model_id: str | None) -> tuple[float, float]:
+    mid = (model_id or "").lower()
+    for family, price in _MODEL_PRICES_USD_PER_1M.items():
+        if family in mid:
+            return price
+    return (settings.llm_input_usd_per_1m, settings.llm_output_usd_per_1m)
+
+
+def _estimated_cost_usd(model_id: str | None, input_tokens: int, output_tokens: int) -> float | None:
+    input_price, output_price = _model_prices(model_id)
+    if input_price <= 0 and output_price <= 0:
         return None
-    return (input_tokens / 1_000_000 * settings.llm_input_usd_per_1m) + (output_tokens / 1_000_000 * settings.llm_output_usd_per_1m)
+    return (input_tokens / 1_000_000 * input_price) + (output_tokens / 1_000_000 * output_price)
 
 
 def _record_llm_request_trajectory(payload: LLMMessageRequest, context: dict[str, Any], model_id: str, max_tokens: int, remaining_tokens: int) -> None:
