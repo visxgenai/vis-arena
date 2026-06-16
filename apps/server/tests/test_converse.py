@@ -105,7 +105,7 @@ def test_invoke_converse_maps_usage_and_model(monkeypatch):
     assert out["message"]["tool_calls"][0]["id"] == "tu1"
     assert fake.called[0] == "converse"
     # And cost prices by family from the returned model id.
-    assert llm._estimated_cost_usd(out["model"], 1_000_000, 0) == 1.35  # deepseek input price
+    assert llm._estimated_cost_usd(out["model"], 1_000_000, 0) == 0.58  # deepseek input price
 
 
 def test_anthropic_id_still_uses_invoke_model(monkeypatch):

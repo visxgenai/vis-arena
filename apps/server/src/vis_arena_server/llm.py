@@ -453,9 +453,9 @@ _DEFAULT_MODEL_PRICES_USD_PER_1M: dict[str, tuple[float, float]] = {
     "opus": (15.0, 75.0),
     "sonnet": (3.0, 15.0),
     "haiku": (1.0, 5.0),
-    "deepseek": (1.35, 5.40),  # approx — verify on the Bedrock pricing page
-    "kimi": (0.60, 2.50),      # approx (moonshotai.kimi-*) — verify
-    "moonshot": (0.60, 2.50),
+    "deepseek": (0.58, 1.68),  # DeepSeek-V3.x on Bedrock (us regions)
+    "kimi": (0.60, 3.00),      # Kimi K2.5 on Bedrock (moonshotai.kimi-*)
+    "moonshot": (0.60, 3.00),
 }
 
 

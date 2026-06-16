@@ -9,8 +9,8 @@ def test_model_prices_by_family() -> None:
     assert llm._model_prices("global.anthropic.claude-opus-4-8") == (15.0, 75.0)
     assert llm._model_prices("global.anthropic.claude-haiku-4-5-20251001-v1:0") == (1.0, 5.0)
     assert llm._model_prices("global.anthropic.claude-sonnet-4-5-20250929-v1:0") == (3.0, 15.0)
-    assert llm._model_prices("deepseek.v3.2") == (1.35, 5.40)
-    assert llm._model_prices("moonshotai.kimi-k2.5") == (0.60, 2.50)
+    assert llm._model_prices("deepseek.v3.2") == (0.58, 1.68)
+    assert llm._model_prices("moonshotai.kimi-k2.5") == (0.60, 3.00)
 
 
 def test_model_prices_unknown_falls_back_to_global() -> None:
