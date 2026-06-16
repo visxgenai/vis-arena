@@ -110,6 +110,11 @@ def _job_token_total(job_id: str) -> int:
 
 
 def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int, model_id: str) -> dict[str, Any]:
+    # Anthropic models use the native invoke_model + messages body (below). Non-Anthropic Bedrock
+    # models (DeepSeek, Kimi, …) use the provider-agnostic Converse API instead. Routing by id
+    # keeps the Anthropic path untouched.
+    if "anthropic" not in model_id:
+        return _invoke_converse(payload, max_tokens, model_id)
     body = _anthropic_body(payload.messages, payload.tools, payload.tool_choice, max_tokens)
     client = boto3.client(
         "bedrock-runtime",
@@ -139,6 +144,147 @@ def _invoke_bedrock(payload: LLMMessageRequest, max_tokens: int, model_id: str) 
             "total_tokens": int(usage.get("input_tokens") or 0) + int(usage.get("output_tokens") or 0),
         },
     }
+
+
+def _invoke_converse(payload: LLMMessageRequest, max_tokens: int, model_id: str) -> dict[str, Any]:
+    system, messages = _converse_messages(payload.messages)
+    tool_config = _converse_tool_config(payload.tools, payload.tool_choice)
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=settings.bedrock_region,
+        config=Config(read_timeout=settings.bedrock_read_timeout_seconds),
+    )
+    kwargs: dict[str, Any] = {
+        "modelId": model_id,
+        "messages": messages,
+        "inferenceConfig": {"maxTokens": max_tokens},
+    }
+    if system:
+        kwargs["system"] = system
+    if tool_config is not None:
+        kwargs["toolConfig"] = tool_config
+    try:
+        response = client.converse(**kwargs)
+    except ClientError as exc:
+        message = exc.response.get("Error", {}).get("Message") or str(exc)
+        raise HTTPException(status_code=502, detail=f"Bedrock converse failed: {message}") from exc
+    except BotoCoreError as exc:
+        raise HTTPException(status_code=502, detail=f"Bedrock converse failed: {exc}") from exc
+    content = (((response.get("output") or {}).get("message") or {}).get("content")) or []
+    usage = response.get("usage") or {}
+    input_tokens = int(usage.get("inputTokens") or 0)
+    output_tokens = int(usage.get("outputTokens") or 0)
+    return {
+        "model": model_id,
+        "message": _openai_message_from_converse(content),
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": int(usage.get("totalTokens") or (input_tokens + output_tokens)),
+        },
+    }
+
+
+def _converse_text(value: Any) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(item.get("text") if isinstance(item, dict) else item) for item in value)
+    return str(value or "")
+
+
+def _converse_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Convert OpenAI-style messages to (system, Converse messages).
+
+    Bedrock Converse requires strict user/assistant alternation, so consecutive same-role
+    messages are merged into one — in particular multiple `tool` results become one user
+    message with several toolResult blocks. The template always starts system,user, so the
+    first emitted message is `user`.
+    """
+    system_parts: list[str] = []
+    grouped: list[dict[str, Any]] = []
+
+    def push(role: str, blocks: list[dict[str, Any]]) -> None:
+        if not blocks:
+            return
+        if grouped and grouped[-1]["role"] == role:
+            grouped[-1]["content"].extend(blocks)
+        else:
+            grouped.append({"role": role, "content": list(blocks)})
+
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            content = message.get("content")
+            if content:
+                system_parts.append(str(content))
+            continue
+        if role == "tool":
+            push("user", [{"toolResult": {
+                "toolUseId": message.get("tool_call_id"),
+                "content": [{"text": str(message.get("content") or "")}],
+            }}])
+            continue
+        if role == "assistant":
+            blocks: list[dict[str, Any]] = []
+            text = _converse_text(message.get("content"))
+            if text:
+                blocks.append({"text": text})
+            for call in message.get("tool_calls") or []:
+                function = call.get("function") or {}
+                try:
+                    arguments = json.loads(function.get("arguments") or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+                blocks.append({"toolUse": {"toolUseId": call.get("id"), "name": function.get("name"), "input": arguments}})
+            push("assistant", blocks or [{"text": " "}])  # Converse rejects empty assistant content
+            continue
+        # user (default)
+        text = _converse_text(message.get("content"))
+        if text:
+            push("user", [{"text": text}])
+
+    system_list = [{"text": "\n\n".join(system_parts)}] if system_parts else []
+    return system_list, grouped
+
+
+def _converse_tool_config(tools: list[dict[str, Any]], tool_choice: Any) -> dict[str, Any] | None:
+    if not tools:
+        return None
+    specs = []
+    for tool in tools:
+        function = tool.get("function") or tool
+        specs.append({"toolSpec": {
+            "name": function["name"],
+            "description": function.get("description", ""),
+            "inputSchema": {"json": function.get("parameters", {"type": "object", "properties": {}})},
+        }})
+    config: dict[str, Any] = {"tools": specs}
+    # "auto" is the Converse default; only set toolChoice to force a specific tool (and some
+    # models reject an explicit auto/any choice), so omit it for the common auto case.
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function") or {}
+        name = function.get("name") or tool_choice.get("name")
+        if name:
+            config["toolChoice"] = {"tool": {"name": name}}
+    return config
+
+
+def _openai_message_from_converse(content: list[dict[str, Any]]) -> dict[str, Any]:
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for item in content:
+        if "text" in item:
+            text_parts.append(item.get("text") or "")
+        elif "toolUse" in item:
+            tool_use = item["toolUse"]
+            tool_calls.append({
+                "id": tool_use.get("toolUseId"),
+                "type": "function",
+                "function": {"name": tool_use.get("name"), "arguments": json.dumps(tool_use.get("input") or {})},
+            })
+    message: dict[str, Any] = {"role": "assistant", "content": "\n".join(text_parts) or None}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+    return message
 
 
 def _resolve_bedrock_model(requested_model: str | None) -> str:
