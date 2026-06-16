@@ -33,7 +33,8 @@ from llm_client import make_llm_client
 
 # Choose your model in code: pass model=... per LLM call (see client.create below), or edit these.
 # Arena cloud allow-list (snapshot; `./agent.py models` prints the live list):
-#   haiku-4-5 (cheapest), sonnet-4-5 (balanced), opus-4-8/4-7 (priciest).
+#   haiku-4-5 (cheapest), sonnet-4-5 (balanced), opus-4-8/4-7 (priciest),
+#   deepseek.v3.2, moonshotai.kimi-k2.5 (open models, tool-use capable).
 # Call wrappers live in llm_client.py.
 CLOUD_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 LOCAL_MODEL = "gpt-5.5"
