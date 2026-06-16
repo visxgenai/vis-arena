@@ -51,8 +51,8 @@ Use a brief ReAct workflow:
 4. Optionally verify the file exists, then call finish with a concise JSON
    summary.
 
-The artifact must work without a dev server. If it needs runtime data, copy or
-embed only what is necessary inside dist/ so previewing dist/index.html works."""
+The artifact must be fully self-contained and work without a dev server: embed
+the data and any assets it needs inside dist/ so previewing dist/index.html works."""
 
 
 EVALUATION_PROMPT = """You are an impartial storytelling-visualization evaluator.
