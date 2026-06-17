@@ -9,7 +9,7 @@ description = "LLM template Vis Arena submission agent"
 requires-python = ">=3.11"
 dependencies = [
   "openai>=1.30.0",
-  "playwright>=1.43.0"
+  "playwright==1.60.0"
 ]
 
 [tool.setuptools]
