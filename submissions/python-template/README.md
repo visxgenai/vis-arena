@@ -13,6 +13,7 @@ template uses a small ReAct loop with:
 |-------------------|---------------------------------------------------------------------------|
 | `agent.py`        | Arena protocol entrypoint. You usually do NOT edit it.                    |
 | `example_agent.py`| The example implementation. **Edit or replace this.**                    |
+| `llm_client.py`   | LLM call routing (local OpenAI vs arena cloud). Edit only to customize calls. |
 | `agent.md`        | In-bundle contract reference. Read this if you want the exact paths/JSON. |
 | `submission.yaml` | Bundle metadata and command list.                                         |
 | `pyproject.toml`  | Python dependencies.                                                      |
@@ -60,18 +61,20 @@ your own laptop before submitting.
 
 ## Cloud models
 
-The arena exposes these models via `VIS_ARENA_LLM_MODELS`. Set
-`VIS_ARENA_LLM_MODEL` to pick one; otherwise the first is used.
+Pick your model **in code**: edit `CLOUD_MODEL` in `example_agent.py` (default
+`haiku-4-5`), or pass `model=` to `client.create(...)` to choose per call (mix models —
+a cheap one for planning, a pricier one for the final render). The arena allow-list:
 
 | Model id | Notes |
 |---|---|
-| `global.anthropic.claude-opus-4-8` | Default. |
-| `global.anthropic.claude-opus-4-7` | Previous Claude Opus. |
+| `global.anthropic.claude-haiku-4-5-20251001-v1:0` | default · cheapest |
+| `global.anthropic.claude-sonnet-4-5-20250929-v1:0` | balanced |
+| `global.anthropic.claude-opus-4-8` / `…-opus-4-7` | highest quality, priciest |
+| `deepseek.v3.2` | open model, tool-use capable |
+| `moonshotai.kimi-k2.5` | open model, tool-use capable |
 
-Run `./agent.py models` inside a cloud job to print the live list.
-To select one explicitly in your agent environment, set
-`VIS_ARENA_LLM_MODEL=global.anthropic.claude-opus-4-7` or
-`VIS_ARENA_LLM_MODEL=global.anthropic.claude-opus-4-8`.
+Run `./agent.py models` inside a cloud job to print the live allow-list (injected as
+`VIS_ARENA_LLM_MODELS`). Any model you request must be on it, or the call is rejected.
 
 ## Submit
 
