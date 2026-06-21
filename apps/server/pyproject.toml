@@ -29,6 +29,7 @@ dev = [
 [project.scripts]
 vis-arena-server = "vis_arena_server.main:run"
 vis-arena-worker = "vis_arena_server.evaluator:run"
+vis-arena-runner = "vis_arena_server.runner:run"
 
 [tool.setuptools.packages.find]
 where = ["src"]

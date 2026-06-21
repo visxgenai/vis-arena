@@ -13,6 +13,7 @@ from typing import Any
 
 from .auth import create_token
 from .db import connect, now_iso, row_to_dict
+from .executor import LOCAL_DOCKER, configured_executor, dispatch_queued_jobs
 from .rounds import (
     EVALUATION_JOB_TYPES,
     advance_due_rounds,
@@ -77,10 +78,13 @@ def claim_job() -> dict[str, Any] | None:
             join datasets on datasets.id = jobs.dataset_id
             left join jobs target on target.id = jobs.review_target_job_id
             where jobs.status = 'queued'
+              and coalesce(jobs.executor, ?) = ?
             order by case coalesce(jobs.job_type, 'generation') when 'generation' then 0 else 1 end,
                      jobs.created_at
             limit 1
             """
+            ,
+            (LOCAL_DOCKER, LOCAL_DOCKER),
         ).fetchone()
         if row is None:
             return None
@@ -90,13 +94,13 @@ def claim_job() -> dict[str, Any] | None:
         return dict(row)
 
 
-def run_job(job: dict[str, Any]) -> dict[str, Any]:
+def run_job(job: dict[str, Any], *, use_docker: bool = True, update_intermediate_metadata: bool = True) -> dict[str, Any]:
     if (job.get("job_type") or "generation") in EVALUATION_JOB_TYPES:
-        return run_peer_review_job(job)
-    return run_generation_job(job)
+        return run_peer_review_job(job, use_docker=use_docker, update_intermediate_metadata=update_intermediate_metadata)
+    return run_generation_job(job, use_docker=use_docker, update_intermediate_metadata=update_intermediate_metadata)
 
 
-def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
+def run_generation_job(job: dict[str, Any], *, use_docker: bool = True, update_intermediate_metadata: bool = True) -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         submission_zip = root / "submission.zip"
@@ -116,11 +120,12 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         preview_prefix = f"jobs/{job['id']}/generation/preview"
 
         write_container_script(root, "generation")
-        generation_runtime = run_docker(root, job, phase="generation")
+        generation_runtime = run_docker(root, job, phase="generation") if use_docker else run_direct(root, job, phase="generation")
         generation_runtime["generation_run_seconds"] = generation_runtime["run_seconds"]
         if generation_runtime["returncode"] != 0:
             runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
-            update_job_runtime_metadata(job["id"], generation_runtime, runtime_files)
+            if update_intermediate_metadata:
+                update_job_runtime_metadata(job["id"], generation_runtime, runtime_files)
             raise RuntimeError(
                 f"Docker generation failed with exit {generation_runtime['returncode']}:\n"
                 f"{failure_log_tail(reports_dir, 'generation', generation_runtime)}"
@@ -136,12 +141,17 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         update_job_artifact_metadata(job["id"], artifact_prefix, preview_s3_key)
 
         write_container_script(root, "evaluation")
-        evaluation_runtime = run_docker(root, job, phase="evaluation", artifact_url=_job_preview_url(job["id"]))
+        evaluation_runtime = (
+            run_docker(root, job, phase="evaluation", artifact_url=_job_preview_url(job["id"]))
+            if use_docker
+            else run_direct(root, job, phase="evaluation", artifact_url=_job_preview_url(job["id"]))
+        )
         runtime = combine_runtimes(generation_runtime, evaluation_runtime)
         runtime["generation_run_seconds"] = generation_runtime["run_seconds"]
         runtime["self_evaluation_run_seconds"] = evaluation_runtime["run_seconds"]
         runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
-        update_job_runtime_metadata(job["id"], runtime, runtime_files)
+        if update_intermediate_metadata:
+            update_job_runtime_metadata(job["id"], runtime, runtime_files)
         if evaluation_runtime["returncode"] != 0:
             raise RuntimeError(
                 f"Docker evaluation failed with exit {evaluation_runtime['returncode']}:\n"
@@ -159,7 +169,7 @@ def run_generation_job(job: dict[str, Any]) -> dict[str, Any]:
         }
 
 
-def run_peer_review_job(job: dict[str, Any]) -> dict[str, Any]:
+def run_peer_review_job(job: dict[str, Any], *, use_docker: bool = True, update_intermediate_metadata: bool = True) -> dict[str, Any]:
     if not job.get("review_target_job_id"):
         raise RuntimeError("Peer review target job is not set")
     if not job.get("target_preview_s3_key"):
@@ -180,9 +190,14 @@ def run_peer_review_job(job: dict[str, Any]) -> dict[str, Any]:
         reports_dir.mkdir(parents=True, exist_ok=True)
 
         write_container_script(root, "evaluation")
-        runtime = run_docker(root, job, phase="evaluation", artifact_url=_job_preview_url(job["review_target_job_id"]))
+        runtime = (
+            run_docker(root, job, phase="evaluation", artifact_url=_job_preview_url(job["review_target_job_id"]))
+            if use_docker
+            else run_direct(root, job, phase="evaluation", artifact_url=_job_preview_url(job["review_target_job_id"]))
+        )
         runtime_files = upload_runtime_files(job["id"], reports_dir, work_dir)
-        update_job_runtime_metadata(job["id"], runtime, runtime_files)
+        if update_intermediate_metadata:
+            update_job_runtime_metadata(job["id"], runtime, runtime_files)
         if runtime["returncode"] != 0:
             raise RuntimeError(f"Docker evaluation failed with exit {runtime['returncode']}:\n{runtime['log_tail']}")
 
@@ -206,12 +221,25 @@ def stage_task_workdirs(dataset_s3_key: str, task_id: str, staging_dir: Path, wo
 
 
 def copy_sdk(target: Path) -> None:
-    repo_root = Path(__file__).resolve().parents[4]
+    repo_root = _repo_root()
     shutil.copytree(
         repo_root / "packages" / "arena-sdk",
         target,
         ignore=shutil.ignore_patterns(".venv", "__pycache__", "*.egg-info"),
     )
+
+
+def _repo_root() -> Path:
+    configured = os.environ.get("VIS_ARENA_REPO_ROOT")
+    if configured:
+        root = Path(configured)
+        if (root / "packages" / "arena-sdk").exists():
+            return root
+        raise RuntimeError(f"VIS_ARENA_REPO_ROOT does not contain packages/arena-sdk: {root}")
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "packages" / "arena-sdk").exists():
+            return parent
+    raise RuntimeError("Could not locate packages/arena-sdk; set VIS_ARENA_REPO_ROOT")
 
 
 def make_generation_artifacts_zip(work_dir: Path, target_zip: Path) -> None:
@@ -424,6 +452,70 @@ def run_docker(root: Path, job: dict[str, Any], *, phase: str, artifact_url: str
     }
 
 
+def run_direct(root: Path, job: dict[str, Any], *, phase: str, artifact_url: str | None = None) -> dict[str, Any]:
+    arena_token = create_token(job["owner_id"])
+    env = {
+        **os.environ,
+        "HOME": "/arena/home",
+        "UV_CACHE_DIR": "/arena/.uv-cache",
+        "UV_PROJECT_ENVIRONMENT": "/arena/.venv",
+        "VIS_ARENA_RECORD_TRAJECTORY": "true" if settings.record_trajectory else "false",
+        "VIS_ARENA_JOB_TYPE": job.get("job_type") or "generation",
+        "VIS_ARENA_SERVER_URL": settings.public_base_url,
+        "VIS_ARENA_API_TOKEN": arena_token,
+        "VIS_ARENA_JOB_ID": job["id"],
+        "VIS_ARENA_LLM_PROVIDER": settings.llm_provider,
+        "VIS_ARENA_LLM_MODEL": settings.bedrock_default_model_id if settings.llm_provider == "bedrock" else os.environ.get("VIS_ARENA_OPENAI_MODEL", "gpt-4.1-mini"),
+        "VIS_ARENA_LLM_MODELS": ",".join(settings.bedrock_model_ids) if settings.llm_provider == "bedrock" else os.environ.get("VIS_ARENA_OPENAI_MODEL", "gpt-4.1-mini"),
+        "VIS_ARENA_PHASE": phase,
+    }
+    if artifact_url:
+        env["VIS_ARENA_ARTIFACT_URL"] = artifact_url
+
+    arena_path = Path("/arena")
+    created_link = False
+    if arena_path.exists():
+        if arena_path.resolve() != root.resolve():
+            raise RuntimeError("/arena already exists and does not point at the current job workspace")
+    else:
+        arena_path.symlink_to(root, target_is_directory=True)
+        created_link = True
+
+    started_at = now_iso()
+    started = time.monotonic()
+    try:
+        try:
+            completed = subprocess.run(
+                ["bash", str(root / "run.sh")],
+                cwd=root,
+                env=env,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                timeout=settings.evaluator_timeout_seconds,
+            )
+            output = completed.stdout
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired as exc:
+            output = (exc.stdout or "") if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+            output += f"\nEvaluation timed out after {settings.evaluator_timeout_seconds} seconds."
+            returncode = 124
+    finally:
+        if created_link:
+            arena_path.unlink(missing_ok=True)
+    completed_at = now_iso()
+    run_seconds = round(time.monotonic() - started, 3)
+    (root / "reports").mkdir(parents=True, exist_ok=True)
+    (root / "reports" / "runner.log").write_text(output, encoding="utf-8")
+    return {
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "run_seconds": run_seconds,
+        "returncode": returncode,
+        "log_tail": output[-4000:],
+    }
+
+
 def combine_runtimes(*runtimes: dict[str, Any]) -> dict[str, Any]:
     return {
         "started_at": runtimes[0]["started_at"],
@@ -610,9 +702,9 @@ def queue_peer_reviews_for_generation(db, generation_job_id: str, cutoff_at: str
             insert into jobs (
               id, submission_id, job_type, generator_submission_id,
               review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
-              dataset_id, task_id, status, error, created_at, updated_at
+              dataset_id, task_id, status, error, executor, created_at, updated_at
             )
-            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(uuid.uuid4()),
@@ -626,6 +718,7 @@ def queue_peer_reviews_for_generation(db, generation_job_id: str, cutoff_at: str
                 job["task_id"],
                 status,
                 error,
+                configured_executor(),
                 cutoff_at,
                 cutoff_at,
             ),
@@ -798,6 +891,13 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
         _update_generator_submission_rollup(db, generator_submission_id, now)
     if round_to_check:
         complete_round_if_ready(round_to_check)
+    try:
+        dispatch_queued_jobs()
+    except Exception as exc:
+        # The completed job has already been committed. Follow-up dispatch
+        # failures belong to downstream queued jobs and must not cause the
+        # runner callback to mark this job failed.
+        print(f"Failed to dispatch follow-up jobs after completing {job_id}: {exc}", flush=True)
 
 
 def update_job_runtime_metadata(job_id: str, runtime: dict[str, Any], runtime_files: dict[str, str | None]) -> None:

@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .db import connect, decode_json, now_iso, row_to_dict
+from .executor import configured_executor, dispatch_queued_jobs
 from .settings import settings
 
 TERMINAL_STATUSES = {"succeeded", "failed", "skipped", "cancelled"}
@@ -226,6 +227,7 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             ("peer_review", now, now, round_id),
         )
     complete_round_if_ready(round_id)
+    dispatch_queued_jobs()
     return get_round_detail(round_id) or {"id": round_id}
 
 
@@ -303,9 +305,9 @@ def insert_evaluation_job(
         insert into jobs (
           id, submission_id, job_type, round_id, generator_submission_id,
           review_target_job_id, reviewer_user_id, reviewer_cutoff_at,
-          dataset_id, task_id, status, created_at, updated_at
+          dataset_id, task_id, status, executor, created_at, updated_at
         )
-        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
@@ -319,6 +321,7 @@ def insert_evaluation_job(
             artifact_job["dataset_id"],
             artifact_job["task_id"],
             "queued",
+            configured_executor(),
             now,
             now,
         ),

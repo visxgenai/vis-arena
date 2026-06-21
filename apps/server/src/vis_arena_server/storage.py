@@ -17,6 +17,7 @@ from botocore.client import Config
 from fastapi import HTTPException
 
 from .db import connect, now_iso
+from .executor import configured_executor, dispatch_queued_jobs
 from .settings import settings
 
 SUBMISSION_UPLOAD_DAILY_LIMIT = 3
@@ -173,6 +174,7 @@ def finalize_submission(submission_id: str, owner_id: str, dataset_id: str | Non
         if not ((extract / "agent").exists() or (extract / "agent.py").exists()):
             raise HTTPException(status_code=400, detail="Submission must contain agent or agent.py")
     now = now_iso()
+    executor = configured_executor()
     with connect() as db:
         db.execute(
             "update submissions set status = ?, score = ?, finalized_at = ?, reviewer_eligible_at = null where id = ?",
@@ -185,12 +187,13 @@ def finalize_submission(submission_id: str, owner_id: str, dataset_id: str | Non
                     """
                     insert into jobs (
                       id, submission_id, job_type, generator_submission_id,
-                      dataset_id, task_id, status, created_at, updated_at
+                      dataset_id, task_id, status, executor, created_at, updated_at
                     )
-                    values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (str(uuid.uuid4()), submission_id, "generation", submission_id, dataset["id"], task["id"], "queued", now, now),
+                    (str(uuid.uuid4()), submission_id, "generation", submission_id, dataset["id"], task["id"], "queued", executor, now, now),
                 )
+    dispatch_queued_jobs()
     return {"id": submission_id, "name": row["name"], "status": "queued", "score": None, "created_at": row["created_at"]}
 
 
