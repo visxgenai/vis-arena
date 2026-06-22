@@ -85,6 +85,11 @@ def init_db() -> None:
               run_seconds real,
               generation_run_seconds real,
               self_evaluation_run_seconds real,
+              executor text,
+              external_job_id text,
+              dispatched_at text,
+              last_heartbeat_at text,
+              executor_error text,
               created_at text not null,
               updated_at text not null
             );
@@ -177,12 +182,18 @@ def init_db() -> None:
         _add_column(db, "jobs", "run_seconds real")
         _add_column(db, "jobs", "generation_run_seconds real")
         _add_column(db, "jobs", "self_evaluation_run_seconds real")
+        _add_column(db, "jobs", "executor text")
+        _add_column(db, "jobs", "external_job_id text")
+        _add_column(db, "jobs", "dispatched_at text")
+        _add_column(db, "jobs", "last_heartbeat_at text")
+        _add_column(db, "jobs", "executor_error text")
         _add_column(db, "evaluations", "source_evaluation_id text")
         _add_column(db, "evaluations", "carried_from_round_id text")
         _add_column(db, "evaluations", "is_carried_forward integer not null default 0")
         db.executescript(
             """
             create index if not exists idx_jobs_round_type on jobs(round_id, job_type);
+            create index if not exists idx_jobs_executor_status on jobs(executor, status);
             create index if not exists idx_evaluations_round_artifact on evaluations(round_id, artifact_job_id);
             create index if not exists idx_evaluations_evaluator_sub on evaluations(evaluator_submission_id);
             create index if not exists idx_evaluations_reuse_lookup on evaluations(

@@ -34,6 +34,16 @@ def create_token(user_id: str) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")
 
 
+def create_job_token(job_id: str) -> str:
+    payload = {
+        "sub": job_id,
+        "iat": datetime.now(UTC),
+        "exp": datetime.now(UTC) + timedelta(hours=12),
+        "scope": "runner-job",
+    }
+    return jwt.encode(payload, settings.secret_key, algorithm="HS256")
+
+
 def create_user(email: str, password: str, name: str | None) -> dict:
     user_id = str(uuid.uuid4())
     with connect() as db:

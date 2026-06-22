@@ -183,7 +183,9 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
                    generation_agent_trajectory_s3_key, evaluation_agent_trajectory_s3_key,
                    evaluation_report_s3_key, started_at,
                    completed_at, run_seconds, generation_run_seconds,
-                   self_evaluation_run_seconds, error, created_at, updated_at
+                   self_evaluation_run_seconds, executor, external_job_id,
+                   dispatched_at, last_heartbeat_at, executor_error,
+                   error, created_at, updated_at
             from jobs
             where (coalesce(job_type, 'generation') = 'generation' and submission_id = ?)
                or (job_type in ('peer_review', 'peer_evaluation', 'central_evaluation') and generator_submission_id = ?)
@@ -216,6 +218,81 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
         item["queue_ahead"] = queue_ahead_by_id.get(item["id"])
         items.append(item)
     return {"items": items}
+
+
+@app.get("/internal/jobs/{job_id}/lease")
+def internal_lease_job(job_id: str, request: Request) -> dict:
+    _verify_runner_job_token(request, job_id)
+    now = datetime.now(UTC).isoformat()
+    with connect() as db:
+        row = db.execute(
+            """
+            select jobs.*,
+                   submissions.owner_id,
+                   submissions.s3_key as submission_s3_key,
+                   datasets.s3_key as dataset_s3_key,
+                   target.artifact_s3_prefix as target_artifact_s3_prefix,
+                   target.preview_s3_key as target_preview_s3_key
+            from jobs
+            join submissions on submissions.id = jobs.submission_id
+            join datasets on datasets.id = jobs.dataset_id
+            left join jobs target on target.id = jobs.review_target_job_id
+            where jobs.id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if row["status"] not in {"queued", "running"}:
+            raise HTTPException(status_code=409, detail=f"Job is {row['status']}")
+        db.execute(
+            """
+            update jobs
+            set status = ?, started_at = coalesce(started_at, ?),
+                last_heartbeat_at = ?, updated_at = ?
+            where id = ?
+            """,
+            ("running", now, now, now, job_id),
+        )
+        db.execute("update submissions set status = ? where id = ?", ("running", row["generator_submission_id"] or row["submission_id"]))
+    job = dict(row)
+    job["status"] = "running"
+    job["started_at"] = job.get("started_at") or now
+    job["last_heartbeat_at"] = now
+    return {"job": job}
+
+
+@app.post("/internal/jobs/{job_id}/heartbeat")
+def internal_job_heartbeat(job_id: str, request: Request) -> dict:
+    _verify_runner_job_token(request, job_id)
+    now = datetime.now(UTC).isoformat()
+    with connect() as db:
+        updated = db.execute(
+            "update jobs set last_heartbeat_at = ?, updated_at = ? where id = ? and status = 'running'",
+            (now, now, job_id),
+        ).rowcount
+    if updated != 1:
+        raise HTTPException(status_code=409, detail="Job is not running")
+    return {"ok": True, "last_heartbeat_at": now}
+
+
+@app.post("/internal/jobs/{job_id}/complete")
+def internal_complete_job(job_id: str, payload: dict, request: Request) -> dict:
+    _verify_runner_job_token(request, job_id)
+    from .evaluator import complete_job
+
+    complete_job(job_id, payload)
+    return {"ok": True}
+
+
+@app.post("/internal/jobs/{job_id}/fail")
+def internal_fail_job(job_id: str, payload: dict, request: Request) -> dict:
+    _verify_runner_job_token(request, job_id)
+    from .evaluator import fail_job
+
+    message = str(payload.get("error") or "Runner reported job failure")
+    fail_job(job_id, RuntimeError(message))
+    return {"ok": True}
 
 
 @app.get("/v1/submissions/{submission_id}/llm-usage")
@@ -792,6 +869,19 @@ def _verify_preview_token(token: str, job_id: str) -> None:
         raise HTTPException(status_code=401, detail="Invalid preview token") from exc
     if payload.get("scope") != "artifact-preview" or payload.get("job") != job_id:
         raise HTTPException(status_code=401, detail="Invalid preview token")
+
+
+def _verify_runner_job_token(request: Request, job_id: str) -> None:
+    authorization = request.headers.get("Authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(status_code=401, detail="Missing runner token")
+    try:
+        payload = jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="Invalid runner token") from exc
+    if payload.get("scope") != "runner-job" or payload.get("sub") != job_id:
+        raise HTTPException(status_code=401, detail="Invalid runner token")
 
 
 def _safe_preview_asset_path(asset_path: str) -> str:
