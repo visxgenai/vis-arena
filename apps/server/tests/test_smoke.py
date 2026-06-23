@@ -363,3 +363,18 @@ def test_container_script_supports_requirements_txt() -> None:
     assert script.index("requirements.txt") < script.index("pyproject.toml")
     # the executable ./agent fallback is still present
     assert "./agent generate" in script
+
+
+def test_login_token_outlasts_event_while_job_token_stays_short() -> None:
+    from datetime import UTC, datetime
+
+    import jwt
+    from vis_arena_server.auth import LOGIN_TOKEN_DAYS, create_token
+    from vis_arena_server.settings import settings
+
+    login = jwt.decode(create_token("u1", expires_days=LOGIN_TOKEN_DAYS), settings.secret_key, algorithms=["HS256"])
+    job = jwt.decode(create_token("u1"), settings.secret_key, algorithms=["HS256"])  # default (per-job)
+    login_days = (datetime.fromtimestamp(login["exp"], UTC) - datetime.now(UTC)).days
+    job_days = (datetime.fromtimestamp(job["exp"], UTC) - datetime.now(UTC)).days
+    assert login_days >= 100        # comfortably past the event window
+    assert 25 <= job_days <= 31     # per-job token stays short (default 30d)

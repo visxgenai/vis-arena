@@ -12,7 +12,7 @@ from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .auth import authenticate, create_token, create_user, current_user, update_user_name
+from .auth import LOGIN_TOKEN_DAYS, authenticate, create_token, create_user, current_user, update_user_name
 from .db import connect, decode_json, init_db, row_to_dict
 from .llm import create_llm_message
 from .rounds import close_round, get_round_detail, list_rounds, open_round, round_leaderboard, start_peer_review
@@ -72,7 +72,7 @@ def register(payload: RegisterRequest) -> dict:
         user = create_user(payload.email, payload.password, payload.name)
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Email is already registered") from exc
-    return {"access_token": create_token(user["id"]), "token_type": "bearer", "user": user}
+    return {"access_token": create_token(user["id"], expires_days=LOGIN_TOKEN_DAYS), "token_type": "bearer", "user": user}
 
 
 @app.post("/v1/auth/login", response_model=AuthResponse)
@@ -80,7 +80,7 @@ def login(payload: LoginRequest) -> dict:
     user = authenticate(payload.email, payload.password)
     if user is None:
         raise HTTPException(status_code=401, detail="Invalid email or password")
-    return {"access_token": create_token(user["id"]), "token_type": "bearer", "user": user}
+    return {"access_token": create_token(user["id"], expires_days=LOGIN_TOKEN_DAYS), "token_type": "bearer", "user": user}
 
 
 @app.get("/v1/me", response_model=UserResponse)

@@ -24,11 +24,17 @@ def verify_password(password: str, password_hash: str) -> bool:
     return pwd_context.verify(password, password_hash)
 
 
-def create_token(user_id: str) -> str:
+# Login/CLI session tokens must outlast the event window (challenge runs to Aug 31),
+# else early registrants get logged out mid-event. The per-job token (create_token
+# default) stays short — it only needs the job's runtime.
+LOGIN_TOKEN_DAYS = 120
+
+
+def create_token(user_id: str, expires_days: int = 30) -> str:
     payload = {
         "sub": user_id,
         "iat": datetime.now(UTC),
-        "exp": datetime.now(UTC) + timedelta(days=30),
+        "exp": datetime.now(UTC) + timedelta(days=expires_days),
         "scope": "arena"
     }
     return jwt.encode(payload, settings.secret_key, algorithm="HS256")

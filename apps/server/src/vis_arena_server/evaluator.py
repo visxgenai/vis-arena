@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .auth import create_token
-from .db import connect, now_iso, row_to_dict
+from .db import connect, init_db, now_iso, row_to_dict
 from .executor import LOCAL_DOCKER, configured_executor, dispatch_queued_jobs
 from .rounds import (
     EVALUATION_JOB_TYPES,
@@ -31,6 +31,10 @@ from .trajectory import broker_trajectory_path
 
 
 def run() -> None:
+    # Apply pending schema migrations before claiming jobs. The migration also runs in
+    # the server's startup, but on a deploy that restarts both, the worker can start
+    # first and hit "no such column" until the server migrates. init_db is idempotent.
+    init_db()
     stop_event = threading.Event()
     if settings.rounds_enabled:
         scheduler = threading.Thread(target=round_trigger_loop, args=(stop_event,), daemon=True)
