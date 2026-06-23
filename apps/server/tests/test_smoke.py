@@ -350,3 +350,16 @@ def test_generation_artifacts_zip_excludes_task_data(tmp_path: Path) -> None:
     with ZipFile(target_zip) as archive:
         names = set(archive.namelist())
     assert names == {"dist/index.html", "source/main.js"}
+
+
+def test_container_script_supports_requirements_txt() -> None:
+    from vis_arena_server.evaluator import render_container_script
+
+    script = render_container_script("generation")
+    # requirements.txt path installs deps via uv for all three steps (info, generate, evaluate)
+    assert script.count("uv run --with-requirements requirements.txt --with-editable /arena/sdk") == 3
+    assert "if [ -f requirements.txt ]; then" in script
+    # requirements.txt takes precedence over pyproject.toml
+    assert script.index("requirements.txt") < script.index("pyproject.toml")
+    # the executable ./agent fallback is still present
+    assert "./agent generate" in script

@@ -363,7 +363,11 @@ finish_phase() {
 }
 cd /arena/submission
 if [ "${VIS_ARENA_PHASE}" = "generation" ]; then
-  if [ -f pyproject.toml ]; then
+  if [ -f requirements.txt ]; then
+    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase generation info uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
+    run_phase generation generate uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py generate /arena/work/generate
+  elif [ -f pyproject.toml ]; then
     python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
     run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
     run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate /arena/work/generate
@@ -373,7 +377,10 @@ if [ "${VIS_ARENA_PHASE}" = "generation" ]; then
   fi
   finish_phase generation
 else
-  if [ -f pyproject.toml ]; then
+  if [ -f requirements.txt ]; then
+    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase evaluation evaluate uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py evaluate /arena/work/evaluate
+  elif [ -f pyproject.toml ]; then
     python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
     run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate /arena/work/evaluate
   else

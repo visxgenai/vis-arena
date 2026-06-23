@@ -185,7 +185,8 @@ def test_init_scaffolds_template(tmp_path) -> None:
     assert result.exit_code == 0, result.output
     assert (target / "agent.py").exists()
     assert (target / "submission.yaml").exists()
-    assert (target / "pyproject.toml").exists()
+    assert (target / "requirements.txt").exists()
+    assert not (target / "pyproject.toml").exists()
     assert (target / "README.md").exists()
     assert (target / "agent.py").read_text().startswith("#!/usr/bin/env python3")
 
@@ -296,6 +297,8 @@ def test_submissions_watch_prints_status_usage_and_preview(monkeypatch) -> None:
     from vis_arena_sdk.models import Submission
 
     class FakeClient:
+        base_url = "http://arena.example"
+
         def get_submission(self, submission_id):
             assert submission_id == "sub-9"
             return Submission(id="sub-9", name="demo", status="succeeded", score=0.82)
@@ -329,3 +332,33 @@ def test_submissions_watch_prints_status_usage_and_preview(monkeypatch) -> None:
     assert "tokens=123,456" in result.output
     assert "score=0.82" in result.output
     assert "http://arena.example/v1/jobs/job-1/preview" in result.output
+
+
+def test_agent_command_prefers_requirements_txt(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/uv")
+    (tmp_path / "agent.py").write_text("", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("openai\n", encoding="utf-8")
+
+    cmd = cli._agent_command(tmp_path, ["info"])
+
+    assert cmd == ["uv", "run", "--with-requirements", "requirements.txt", "./agent.py", "info"]
+
+
+def test_agent_command_falls_back_to_pyproject(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/uv")
+    (tmp_path / "agent.py").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+
+    cmd = cli._agent_command(tmp_path, ["info"])
+
+    assert cmd == ["uv", "run", "./agent.py", "info"]
+
+
+def test_agent_command_without_uv_uses_system_python(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(cli.shutil, "which", lambda name: None)
+    (tmp_path / "agent.py").write_text("", encoding="utf-8")
+    (tmp_path / "requirements.txt").write_text("openai\n", encoding="utf-8")
+
+    cmd = cli._agent_command(tmp_path, ["info"])
+
+    assert cmd == [sys.executable, str(tmp_path / "agent.py"), "info"]

@@ -637,7 +637,10 @@ def _run_agent_command(agent_dir: Path, args: list[str], log_path: Path, env: di
 
 
 def _agent_command(agent_dir: Path, args: list[str]) -> list[str]:
-    if (agent_dir / "pyproject.toml").exists() and shutil.which("uv"):
+    uv = shutil.which("uv")
+    if (agent_dir / "requirements.txt").exists() and uv:
+        return ["uv", "run", "--with-requirements", "requirements.txt", "./agent.py", *args]
+    if (agent_dir / "pyproject.toml").exists() and uv:
         return ["uv", "run", "./agent.py", *args]
     return [sys.executable, str(agent_dir / "agent.py"), *args]
 

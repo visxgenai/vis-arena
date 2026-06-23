@@ -16,7 +16,7 @@ template uses a small ReAct loop with:
 | `llm_client.py`   | LLM call routing (local OpenAI vs arena cloud). Edit only to customize calls. |
 | `agent.md`        | In-bundle contract reference. Read this if you want the exact paths/JSON. |
 | `submission.yaml` | Bundle metadata and command list.                                         |
-| `pyproject.toml`  | Python dependencies.                                                      |
+| `requirements.txt`| Python dependencies — one package per line (plain `pip` style).           |
 
 ## Plug in your own agent
 
@@ -111,5 +111,15 @@ the score, artifact path, and preview command.
 Local evaluation uses Playwright. Install the browser once:
 
 ```bash
-uv run playwright install chromium
+uv run --with-requirements requirements.txt playwright install chromium
 ```
+
+## Dependencies: `requirements.txt` (or `pyproject.toml`)
+
+List your Python libraries in `requirements.txt`, one per line — the arena
+installs them before running your agent (locally and in the cloud). Prefer
+`pyproject.toml`/uv instead? Just include that file instead of
+`requirements.txt` — the platform supports either (use **one**, not both).
+
+> Keep **`playwright==1.60.0`** pinned — it must match the arena evaluator's
+> browser, or your evaluation render will silently break.

@@ -1,0 +1,7 @@
+# Python dependencies for your agent. List one package per line.
+# (Beginner-friendly alternative to pyproject.toml — use ONE of them, not both.)
+#
+# IMPORTANT: keep playwright pinned to 1.60.0 — it must match the arena
+# evaluator browser, or your evaluation render will silently break.
+openai>=1.30.0
+playwright==1.60.0
