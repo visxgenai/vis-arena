@@ -241,15 +241,27 @@ def _run_tool_loop(system_prompt: str, user_prompt: str, tool_root: Path, purpos
 
 def _run_bash(command: str, cwd: Path) -> str:
     cwd.mkdir(parents=True, exist_ok=True)
-    completed = subprocess.run(
-        command,
-        cwd=str(cwd),
-        shell=True,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=120,
-    )
+    timeout_s = 300
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            shell=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # Return the timeout to the model (with any partial output) instead of
+        # crashing the whole run, so it can retry with a faster approach.
+        out = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout or b"").decode("utf-8", errors="replace")
+        return (
+            f"$ {command}\nexit=timeout\n"
+            f"Command exceeded {timeout_s}s and was killed. Use a faster approach "
+            f"(avoid nested loops over the whole dataset; prefer libraries like networkx/pandas).\n"
+            f"{out or ''}"
+        )
     return f"$ {command}\nexit={completed.returncode}\n{completed.stdout}"
 
 
