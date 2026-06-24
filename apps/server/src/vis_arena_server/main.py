@@ -168,6 +168,45 @@ def get_submission(submission_id: str, user: dict = Depends(current_user)) -> di
     return submission
 
 
+def _error_headline(error_text: str | None) -> str | None:
+    """Extract a short, actionable failure reason from a job's raw runtime-log tail.
+
+    The stored `error` is the tail of the agent's runtime log (a full traceback), so
+    the real cause is buried at the bottom. This surfaces a one-line headline that a
+    participant can act on. Returns None when there's nothing useful to show.
+    """
+    if not error_text:
+        return None
+    lines = [ln.strip() for ln in error_text.splitlines() if ln.strip()]
+    if not lines:
+        return None
+
+    # 1. Broker error: "...VisArenaError: 400: {"detail": "..."}" -> "400: <detail>"
+    for ln in reversed(lines):
+        m = re.search(r"VisArenaError:\s*(\d{3}):\s*(\{.*\})\s*$", ln)
+        if m:
+            detail = decode_json(m.group(2), None)
+            text = detail.get("detail") if isinstance(detail, dict) else None
+            return (f"{m.group(1)}: {text}" if text else ln)[:240]
+
+    # 2. Known platform phrases (missing artifact / timeout / model / budget).
+    known = ("was not created", "timed out", "and was killed", "model is not enabled", "budget")
+    for ln in reversed(lines):
+        if any(p in ln.lower() for p in known):
+            return ln[:240]
+
+    # 3. Last Python exception line, e.g. "ModuleNotFoundError: No module named 'x'".
+    for ln in reversed(lines):
+        if re.match(r"^[A-Za-z_][\w.]*(Error|Exception):\s", ln):
+            return ln[:240]
+
+    # 4. Fallback: last line that isn't a [timestamp] log marker or the Traceback header.
+    for ln in reversed(lines):
+        if not ln.startswith("[") and "Traceback (most recent call last)" not in ln:
+            return ln[:240]
+    return lines[-1][:240]
+
+
 @app.get("/v1/submissions/{submission_id}/jobs")
 def list_submission_jobs(submission_id: str, user: dict = Depends(current_user)) -> dict:
     _require_submission_access(submission_id, user["id"])
@@ -216,6 +255,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
         item["generation_usage"] = usage["by_purpose"].get("generation", _empty_usage())
         item["self_evaluation_usage"] = usage["by_purpose"].get("evaluation", _empty_usage())
         item["queue_ahead"] = queue_ahead_by_id.get(item["id"])
+        item["error_headline"] = _error_headline(item.get("error"))
         items.append(item)
     return {"items": items}
 

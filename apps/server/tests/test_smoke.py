@@ -378,3 +378,44 @@ def test_login_token_outlasts_event_while_job_token_stays_short() -> None:
     job_days = (datetime.fromtimestamp(job["exp"], UTC) - datetime.now(UTC)).days
     assert login_days >= 100        # comfortably past the event window
     assert 25 <= job_days <= 31     # per-job token stays short (default 30d)
+
+
+def test_error_headline_extracts_actionable_cause() -> None:
+    from vis_arena_server.main import _error_headline
+
+    # Broker 400 — model-name typo (real ap failure): pull the JSON detail.
+    model_typo = (
+        "[2026-06-23T23:42:15+00:00] step_start generation.generate\n"
+        'File "/arena/submission/llm_client.py", line 70, in create\n'
+        "  raise VisArenaError(...)\n"
+        'vis_arena_sdk.client.VisArenaError: 400: {"detail":"Model is not enabled for this arena: '
+        'gglobal.anthropic.claude-sonnet-4-5-20250929-v1:0"}\n'
+        "[2026-06-23T23:42:22+00:00] step_end generation.generate exit_code=1"
+    )
+    h = _error_headline(model_typo)
+    assert h.startswith("400:") and "Model is not enabled" in h and "gglobal" in h
+    assert not h.startswith("[")  # not a log-marker line
+
+    # Broker 502 — tool_use/tool_result mismatch (real ap failure).
+    tool_mismatch = (
+        'vis_arena_sdk.client.VisArenaError: 502: {"detail":"Bedrock invoke failed: messages.0.content.2: '
+        'unexpected `tool_use_id` found in `tool_result` blocks: toolu_x."}'
+    )
+    h = _error_headline(tool_mismatch)
+    assert h.startswith("502:") and "tool_result" in h
+
+    # Missing artifact (the common template failure).
+    assert "was not created" in _error_headline(
+        "Generation failed: dist/index.html was not created\n[ts] step_end exit_code=1"
+    )
+
+    # Bash-tool timeout.
+    assert "killed" in _error_headline("$ python3 ...\nexit=timeout\nCommand exceeded 300s and was killed.")
+
+    # Plain Python exception (missing dep).
+    assert _error_headline("Traceback (most recent call last):\nModuleNotFoundError: No module named 'foo'") \
+        == "ModuleNotFoundError: No module named 'foo'"
+
+    # Nothing to surface.
+    assert _error_headline(None) is None
+    assert _error_headline("   \n  ") is None
