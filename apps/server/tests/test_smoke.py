@@ -328,6 +328,53 @@ def test_broker_trajectory_records_tool_calls_and_responses() -> None:
     assert events[3]["arguments"] == {"command": "cat file.csv"}
 
 
+def test_full_trajectory_records_messages_only_when_enabled(monkeypatch) -> None:
+    from vis_arena_server.llm import _record_llm_request_trajectory
+    from vis_arena_server.schemas import LLMMessageRequest
+    from vis_arena_server.settings import settings
+    from vis_arena_server.trajectory import broker_trajectory_path
+
+    def payload(job_id: str) -> LLMMessageRequest:
+        return LLMMessageRequest(
+            job_id=job_id,
+            purpose="generation",
+            model="model-a",
+            tools=[{"type": "function", "function": {"name": "bash", "parameters": {"type": "object"}}}],
+            messages=[
+                {"role": "system", "content": "You are an agent. " + "x" * 100},
+                {"role": "user", "content": "make a chart"},
+            ],
+        )
+
+    context = {"submission_id": "submission-1"}
+
+    def first_event(job_id: str) -> dict:
+        return json.loads(broker_trajectory_path(job_id, "generation").read_text(encoding="utf-8").splitlines()[0])
+
+    # Default (off): only the count, no raw prompt.
+    monkeypatch.setattr(settings, "full_trajectory", False)
+    j1 = f"job-{uuid.uuid4()}"
+    _record_llm_request_trajectory(payload(j1), context, "model-a", 4096, 1000000)
+    e1 = first_event(j1)
+    assert e1["type"] == "llm_request" and e1["message_count"] == 2 and "messages" not in e1
+
+    # Full mode: records the full messages.
+    monkeypatch.setattr(settings, "full_trajectory", True)
+    monkeypatch.setattr(settings, "trajectory_max_chars", 50000)
+    j2 = f"job-{uuid.uuid4()}"
+    _record_llm_request_trajectory(payload(j2), context, "model-a", 4096, 1000000)
+    e2 = first_event(j2)
+    assert [m["role"] for m in e2["messages"]] == ["system", "user"]
+    assert "You are an agent." in e2["messages"][0]["content"]
+
+    # Cap is honored: a low cap truncates message content.
+    monkeypatch.setattr(settings, "trajectory_max_chars", 20)
+    j3 = f"job-{uuid.uuid4()}"
+    _record_llm_request_trajectory(payload(j3), context, "model-a", 4096, 1000000)
+    e3 = first_event(j3)
+    assert e3["messages"][0]["content"].endswith("...[truncated]")
+
+
 def test_generation_artifacts_zip_excludes_task_data(tmp_path: Path) -> None:
     from vis_arena_server.evaluator import make_generation_artifacts_zip
 

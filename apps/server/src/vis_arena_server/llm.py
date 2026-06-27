@@ -17,8 +17,6 @@ from .settings import settings
 from .trajectory import append_broker_event, stable_event_key
 
 
-MAX_TRAJECTORY_VALUE_CHARS = 4000
-
 
 def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, Any]:
     if not settings.cloud_llm_enabled:
@@ -491,22 +489,23 @@ def _estimated_cost_usd(model_id: str | None, input_tokens: int, output_tokens: 
 
 def _record_llm_request_trajectory(payload: LLMMessageRequest, context: dict[str, Any], model_id: str, max_tokens: int, remaining_tokens: int) -> None:
     tool_names = [_tool_name(tool) for tool in payload.tools]
-    append_broker_event(
-        payload.job_id,
-        payload.purpose,
-        {
-            "type": "llm_request",
-            "provider": "bedrock",
-            "model": model_id,
-            "submission_id": context["submission_id"],
-            "purpose": payload.purpose,
-            "message_count": len(payload.messages),
-            "tool_names": [name for name in tool_names if name],
-            "tool_choice": _truncate(payload.tool_choice),
-            "max_tokens": max_tokens,
-            "remaining_submission_tokens_before": remaining_tokens,
-        },
-    )
+    event: dict[str, Any] = {
+        "type": "llm_request",
+        "provider": "bedrock",
+        "model": model_id,
+        "submission_id": context["submission_id"],
+        "purpose": payload.purpose,
+        "message_count": len(payload.messages),
+        "tool_names": [name for name in tool_names if name],
+        "tool_choice": _truncate(payload.tool_choice),
+        "max_tokens": max_tokens,
+        "remaining_submission_tokens_before": remaining_tokens,
+    }
+    if settings.full_trajectory:
+        # Full capture: the prompt/context (incl. agent-injected user turns) the incremental
+        # events can't reconstruct. Still per-field-capped by _truncate (trajectory_max_chars).
+        event["messages"] = _truncate(payload.messages)
+    append_broker_event(payload.job_id, payload.purpose, event)
 
     call_names = _tool_call_names_by_id(payload.messages)
     for message in payload.messages:
@@ -585,9 +584,10 @@ def _tool_name(tool: dict[str, Any]) -> str | None:
 
 
 def _preview(value: str) -> str:
-    if len(value) <= MAX_TRAJECTORY_VALUE_CHARS:
+    limit = settings.trajectory_max_chars
+    if len(value) <= limit:
         return value
-    return value[:MAX_TRAJECTORY_VALUE_CHARS] + "...[truncated]"
+    return value[:limit] + "...[truncated]"
 
 
 def _truncate(value: Any) -> Any:
