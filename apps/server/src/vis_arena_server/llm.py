@@ -16,6 +16,10 @@ from .schemas import LLMMessageRequest
 from .settings import settings
 from .trajectory import append_broker_event, stable_event_key
 
+# Per-field cap on trajectory string values. Generous so prompts / generated code / reasoning
+# aren't clipped, but bounded so a runaway tool output can't blow up the trace.
+MAX_TRAJECTORY_VALUE_CHARS = 50000
+
 
 
 def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, Any]:
@@ -500,11 +504,10 @@ def _record_llm_request_trajectory(payload: LLMMessageRequest, context: dict[str
         "tool_choice": _truncate(payload.tool_choice),
         "max_tokens": max_tokens,
         "remaining_submission_tokens_before": remaining_tokens,
+        # Full prompt/context (incl. agent-injected user turns) the incremental events can't
+        # reconstruct. Each field is capped by _truncate (MAX_TRAJECTORY_VALUE_CHARS).
+        "messages": _truncate(payload.messages),
     }
-    if settings.full_trajectory:
-        # Full capture: the prompt/context (incl. agent-injected user turns) the incremental
-        # events can't reconstruct. Still per-field-capped by _truncate (trajectory_max_chars).
-        event["messages"] = _truncate(payload.messages)
     append_broker_event(payload.job_id, payload.purpose, event)
 
     call_names = _tool_call_names_by_id(payload.messages)
@@ -584,10 +587,9 @@ def _tool_name(tool: dict[str, Any]) -> str | None:
 
 
 def _preview(value: str) -> str:
-    limit = settings.trajectory_max_chars
-    if len(value) <= limit:
+    if len(value) <= MAX_TRAJECTORY_VALUE_CHARS:
         return value
-    return value[:limit] + "...[truncated]"
+    return value[:MAX_TRAJECTORY_VALUE_CHARS] + "...[truncated]"
 
 
 def _truncate(value: Any) -> Any:

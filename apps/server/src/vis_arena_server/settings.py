@@ -80,12 +80,6 @@ class Settings:
     aws_batch_job_timeout_seconds: int = int(os.environ.get("VIS_ARENA_AWS_BATCH_JOB_TIMEOUT_SECONDS", "2400"))
     runner_heartbeat_interval_seconds: int = int(os.environ.get("VIS_ARENA_RUNNER_HEARTBEAT_INTERVAL_SECONDS", "30"))
     record_trajectory: bool = os.environ.get("VIS_ARENA_RECORD_TRAJECTORY", "true").lower() == "true"
-    # Full trajectory capture: also record the full request `messages` (the prompt/context,
-    # incl. agent-injected user turns). Off by default. When enabling, also raise the cap.
-    full_trajectory: bool = os.environ.get("VIS_ARENA_FULL_TRAJECTORY", "false").lower() == "true"
-    # Per-field truncation cap for trajectory values (chars). Default 4000; set ~50000 with
-    # full_trajectory so generated code / reasoning / tool outputs aren't clipped.
-    trajectory_max_chars: int = int(os.environ.get("VIS_ARENA_TRAJECTORY_MAX_CHARS", "4000"))
     arena_api_token: str | None = os.environ.get("VIS_ARENA_WORKER_API_TOKEN")
     legacy_peer_review_enabled: bool = os.environ.get("VIS_ARENA_LEGACY_PEER_REVIEW_ENABLED", "false").lower() == "true"
     rounds_enabled: bool = os.environ.get("VIS_ARENA_ROUNDS_ENABLED", "false").lower() == "true"
