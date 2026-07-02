@@ -251,6 +251,9 @@ def _run_bash(command: str, cwd: Path) -> str:
             cwd=str(cwd),
             shell=True,
             text=True,
+            # Decode leniently: a command that emits non-UTF-8 bytes (e.g. `head` of a binary,
+            # or a data file with odd encoding) must not crash the whole agent run.
+            errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=timeout_s,
