@@ -12,13 +12,13 @@ from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from .auth import LOGIN_TOKEN_DAYS, authenticate, create_token, create_user, current_user, update_user_name
+from .auth import LOGIN_TOKEN_DAYS, authenticate, create_token, create_user, current_user, update_user_name, update_user_password
 from .db import connect, decode_json, init_db, row_to_dict
 from .llm import create_llm_message
 from .rounds import close_round, get_round_detail, list_rounds, open_round, round_leaderboard, start_peer_review
-from .schemas import AuthResponse, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest, UpdateMeRequest, UserResponse
+from .schemas import AuthResponse, ChangePasswordRequest, LLMMessageRequest, LLMMessageResponse, LLMTokenRequest, LLMTokenResponse, LoginRequest, RegisterRequest, UpdateMeRequest, UserResponse
 from .settings import settings
-from .storage import create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get, read_s3_file
+from .storage import SUBMISSION_UPLOAD_DAILY_LIMIT, create_dataset_upload, create_submission_upload, finalize_dataset, finalize_submission, presigned_get, read_s3_file, submissions_today_count
 
 app = FastAPI(title="Vis Arena API", version="0.1.0")
 app.add_middleware(
@@ -85,12 +85,24 @@ def login(payload: LoginRequest) -> dict:
 
 @app.get("/v1/me", response_model=UserResponse)
 def me(user: dict = Depends(current_user)) -> dict:
-    return user
+    used = submissions_today_count(user["id"])
+    return {
+        **user,
+        "daily_submission_limit": SUBMISSION_UPLOAD_DAILY_LIMIT,
+        "submissions_today": used,
+        "remaining_submissions_today": max(0, SUBMISSION_UPLOAD_DAILY_LIMIT - used),
+    }
 
 
 @app.patch("/v1/me", response_model=UserResponse)
 def update_me(payload: UpdateMeRequest, user: dict = Depends(current_user)) -> dict:
     return update_user_name(user["id"], payload.name)
+
+
+@app.post("/v1/me/password")
+def change_password(payload: ChangePasswordRequest, user: dict = Depends(current_user)) -> dict:
+    update_user_password(user["id"], payload.current_password, payload.new_password)
+    return {"ok": True}
 
 
 @app.get("/v1/datasets")

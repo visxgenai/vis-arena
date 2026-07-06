@@ -21,10 +21,19 @@ class UserResponse(BaseModel):
     id: str
     email: str
     name: str | None = None
+    # Populated by GET /v1/me so the account page can show the daily quota; omitted (None) elsewhere.
+    daily_submission_limit: int | None = None
+    submissions_today: int | None = None
+    remaining_submissions_today: int | None = None
 
 
 class UpdateMeRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=8, max_length=200)
 
 
 class AuthResponse(BaseModel):

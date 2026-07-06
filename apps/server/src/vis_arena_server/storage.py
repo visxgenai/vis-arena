@@ -23,6 +23,17 @@ from .settings import settings
 SUBMISSION_UPLOAD_DAILY_LIMIT = 3
 
 
+def submissions_today_count(owner_id: str) -> int:
+    """How many submissions this account has created since UTC midnight (for the daily-limit UI)."""
+    with connect() as db:
+        midnight = datetime.combine(datetime.now(UTC).date(), time.min, tzinfo=UTC).isoformat()
+        row = db.execute(
+            "select count(*) as count from submissions where owner_id = ? and created_at >= ?",
+            (owner_id, midnight),
+        ).fetchone()
+    return int(row["count"])
+
+
 def s3_client():
     endpoint_url = settings.s3_endpoint_url or f"https://s3.{settings.s3_region}.amazonaws.com"
     return boto3.client(

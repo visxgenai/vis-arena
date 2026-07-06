@@ -82,6 +82,18 @@ def update_user_name(user_id: str, name: str) -> dict:
     return user
 
 
+def update_user_password(user_id: str, current_password: str, new_password: str) -> None:
+    if len(new_password) < 8:
+        raise HTTPException(status_code=422, detail="New password must be at least 8 characters")
+    with connect() as db:
+        row = db.execute("select password_hash from users where id = ?", (user_id,)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=401, detail="Unknown user")
+        if not verify_password(current_password, row["password_hash"]):
+            raise HTTPException(status_code=400, detail="Current password is incorrect")
+        db.execute("update users set password_hash = ? where id = ?", (hash_password(new_password), user_id))
+
+
 def current_user(credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer)]) -> dict:
     try:
         payload = jwt.decode(credentials.credentials, settings.secret_key, algorithms=["HS256"])
