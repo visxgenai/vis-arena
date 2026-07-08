@@ -19,6 +19,7 @@ _EXCLUDED_BUNDLE_DIRS = {
     ".pytest_cache",
     ".ruff_cache",
     ".venv",
+    ".vis-arena",  # SDK local-run cache (task data copies, generated outputs) — never ship it
     "__pycache__",
     "node_modules",
     "venv",
