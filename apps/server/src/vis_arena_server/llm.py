@@ -259,14 +259,17 @@ def _converse_tool_config(tools: list[dict[str, Any]], tool_choice: Any) -> dict
             "description": function.get("description", ""),
             "inputSchema": {"json": function.get("parameters", {"type": "object", "properties": {}})},
         }})
+    choice = _normalize_tool_choice(tool_choice)
+    if choice == "none":
+        # Converse has no "none" choice — omit the tool config entirely so no tools are offered.
+        return None
     config: dict[str, Any] = {"tools": specs}
-    # "auto" is the Converse default; only set toolChoice to force a specific tool (and some
-    # models reject an explicit auto/any choice), so omit it for the common auto case.
-    if isinstance(tool_choice, dict):
-        function = tool_choice.get("function") or {}
-        name = function.get("name") or tool_choice.get("name")
-        if name:
-            config["toolChoice"] = {"tool": {"name": name}}
+    # "auto" is the Converse default; only set toolChoice when forcing (and some models reject an
+    # explicit auto choice), so omit it for the common auto/None case.
+    if isinstance(choice, tuple):
+        config["toolChoice"] = {"tool": {"name": choice[1]}}
+    elif choice == "any":
+        config["toolChoice"] = {"any": {}}
     return config
 
 
@@ -337,8 +340,14 @@ def _anthropic_body(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
     converted_tools = [_anthropic_tool(tool) for tool in tools]
     if converted_tools:
         body["tools"] = converted_tools
-        if tool_choice:
-            body["tool_choice"] = {"type": "auto"} if tool_choice == "auto" else tool_choice
+        choice = _normalize_tool_choice(tool_choice)
+        if choice == "auto":
+            body["tool_choice"] = {"type": "auto"}
+        elif choice in ("any", "none"):
+            body["tool_choice"] = {"type": choice}
+        elif isinstance(choice, tuple):
+            body["tool_choice"] = {"type": "tool", "name": choice[1]}
+        # None: omit — Bedrock defaults to auto.
     return body
 
 
@@ -370,6 +379,47 @@ def _assistant_content(message: dict[str, Any]) -> list[dict[str, Any]]:
             }
         )
     return content or [{"type": "text", "text": ""}]
+
+
+_TOOL_CHOICE_HELP = (
+    'Unsupported tool_choice. Accepted forms: "auto", "none", "required"/"any", '
+    '{"type": "tool", "name": "<tool>"} (Anthropic style), or '
+    '{"type": "function", "function": {"name": "<tool>"}} (OpenAI style).'
+)
+
+
+def _normalize_tool_choice(tool_choice: Any) -> Any:
+    """Map every OpenAI- and Anthropic-style tool_choice to one canonical form.
+
+    Returns None (no preference), "auto", "any", "none", or ("tool", name).
+    Participant agents are written against the OpenAI client shape locally, so the
+    broker must accept both dialects; unrecognizable input gets an explicit 400
+    instead of an opaque Bedrock 502.
+    """
+    if tool_choice is None or tool_choice == "":
+        return None
+    if isinstance(tool_choice, str):
+        value = tool_choice.lower()
+        if value == "auto":
+            return "auto"
+        if value == "none":
+            return "none"
+        if value in ("required", "any"):
+            return "any"
+        raise HTTPException(status_code=400, detail=_TOOL_CHOICE_HELP)
+    if isinstance(tool_choice, dict):
+        function = tool_choice.get("function")
+        name = function.get("name") if isinstance(function, dict) else None
+        name = name or tool_choice.get("name")
+        if isinstance(name, str) and name:
+            return ("tool", name)
+        ctype = tool_choice.get("type")
+        if ctype in ("auto", "any", "none"):
+            return ctype
+        if ctype == "required":
+            return "any"
+        raise HTTPException(status_code=400, detail=_TOOL_CHOICE_HELP)
+    raise HTTPException(status_code=400, detail=_TOOL_CHOICE_HELP)
 
 
 def _anthropic_tool(tool: dict[str, Any]) -> dict[str, Any]:
