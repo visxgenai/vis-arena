@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,6 +12,31 @@ from .settings import settings
 
 TERMINAL_STATUSES = {"succeeded", "failed", "skipped", "cancelled"}
 EVALUATION_JOB_TYPES = {"peer_review", "peer_evaluation", "central_evaluation"}
+
+
+def select_peer_reviewers(
+    round_id: str, participants: list[dict[str, Any]], owner_id: str, cap: int
+) -> list[dict[str, Any]]:
+    """Pick which participants review one owner's artifacts this round.
+
+    Ring assignment over a per-round shuffled roster: the owner's next `cap`
+    neighbours review them. Guarantees exactly min(cap, N-1) reviewers per
+    artifact, an equal review workload for every participant, and no
+    self-review. The shuffle is seeded with the round id, so the pairing is
+    deterministic within a round (safe to re-run) but rotates across rounds —
+    no target is permanently stuck with the same judges. cap <= 0 means
+    everyone reviews everyone (the pre-subsampling behaviour).
+    """
+    roster = [dict(p) for p in participants]
+    roster.sort(key=lambda p: p["user_id"])  # stable pre-shuffle order regardless of SQL row order
+    rng = random.Random(round_id)
+    rng.shuffle(roster)
+    n = len(roster)
+    k = (n - 1) if cap <= 0 else min(cap, n - 1)
+    position = next((i for i, p in enumerate(roster) if p["user_id"] == owner_id), None)
+    if position is None or k <= 0:
+        return []
+    return [roster[(position + offset) % n] for offset in range(1, k + 1)]
 
 
 def open_round(
@@ -193,10 +219,11 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             """,
             (round_id,),
         ).fetchall()
+        cap = settings.peer_reviewers_per_artifact
         for artifact in artifacts:
-            for participant in participants:
-                if participant["user_id"] == artifact["target_owner_id"]:
-                    continue
+            for participant in select_peer_reviewers(
+                round_id, [dict(p) for p in participants], artifact["target_owner_id"], cap
+            ):
                 if carry_forward_peer_evaluation(
                     db,
                     artifact_job=dict(artifact),

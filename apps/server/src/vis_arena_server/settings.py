@@ -70,6 +70,8 @@ class Settings:
     evaluator_image: str = os.environ.get("VIS_ARENA_EVALUATOR_IMAGE", "mcr.microsoft.com/playwright/python:v1.60.0-noble")
     evaluator_network: str = os.environ.get("VIS_ARENA_EVALUATOR_NETWORK", "bridge")
     evaluator_timeout_seconds: int = int(os.environ.get("VIS_ARENA_EVALUATOR_TIMEOUT_SECONDS", "1800"))
+    # Peer reviewers per artifact in a round (0 = every participant reviews every artifact).
+    peer_reviewers_per_artifact: int = int(os.environ.get("VIS_ARENA_PEER_REVIEWERS_PER_ARTIFACT", "2"))
     executor_mode: str = os.environ.get("VIS_ARENA_EXECUTOR_MODE", "local_docker")
     aws_batch_region: str = os.environ.get("VIS_ARENA_AWS_BATCH_REGION", os.environ.get("AWS_REGION", s3_region))
     aws_batch_job_queue: str | None = os.environ.get("VIS_ARENA_AWS_BATCH_JOB_QUEUE") or None
