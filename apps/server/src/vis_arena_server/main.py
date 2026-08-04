@@ -599,10 +599,11 @@ def serve_job_preview(job_id: str, asset_path: str, token: str | None = None) ->
 def get_job_evaluation_report(job_id: str) -> dict:
     # The evaluation report (the JSON the reviewer agent wrote: score, summary, and a
     # per-criterion rubric breakdown). Public, like previews — these are about artifacts
-    # already shown on the public leaderboard.
+    # already shown on the public leaderboard. Central-judge reports are NOT served:
+    # the judge's question set is private, so only its aggregate score is public.
     with connect() as db:
-        row = db.execute("select evaluation_report_s3_key from jobs where id = ?", (job_id,)).fetchone()
-    if row is None or not row["evaluation_report_s3_key"]:
+        row = db.execute("select evaluation_report_s3_key, job_type from jobs where id = ?", (job_id,)).fetchone()
+    if row is None or not row["evaluation_report_s3_key"] or (row["job_type"] or "") == "central_evaluation":
         raise HTTPException(status_code=404, detail="Evaluation report not found")
     body, _ = read_s3_file(row["evaluation_report_s3_key"])
     report = decode_json(body.decode("utf-8", errors="replace"), None)
@@ -738,6 +739,7 @@ def _leaderboard_participants(db, request: Request) -> list[dict[str, Any]]:
                 limit 1) as preview_job_id
         from submissions join users on users.id = submissions.owner_id
         where submissions.finalized_at is not null
+          and submissions.status != 'hidden'
         order by coalesce(users.name, users.id), submissions.finalized_at desc, submissions.created_at desc
         """
     ).fetchall()

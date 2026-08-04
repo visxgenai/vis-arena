@@ -20,3 +20,5 @@ references/
 build/
 migration-backup/
 .playwright-mcp/
+.gstack/
+.judge/

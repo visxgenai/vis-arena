@@ -1,0 +1,26 @@
+{
+  "_comment": "EXAMPLE fixture only. The real question set is private and injected as questions.json at bundle-build time — it is never committed to this repository.",
+  "questions": [
+    {
+      "id": "q1",
+      "type": "text",
+      "question": "What is the title shown at the top of the page?",
+      "answer": "Example Dashboard",
+      "accept": ["example dashboard", "the example dashboard"]
+    },
+    {
+      "id": "q2",
+      "type": "number",
+      "question": "How many charts are visible on the page?",
+      "answer": "3",
+      "accept": []
+    },
+    {
+      "id": "q3",
+      "type": "choice",
+      "question": "Which of {Alpha, Beta, Gamma} has the highest value in the bar chart?",
+      "answer": "Alpha",
+      "accept": []
+    }
+  ]
+}
