@@ -274,6 +274,9 @@ def queue_central_evaluation_for_generation(db, generation_job_id: str, now: str
     ).fetchone()
     if artifact is None:
         return
+    judged_tasks = {t.strip() for t in settings.central_judge_tasks.split(",") if t.strip()}
+    if judged_tasks and artifact["task_id"] not in judged_tasks:
+        return
     judge = db.execute(
         """
         select submissions.id, submissions.owner_id, users.name

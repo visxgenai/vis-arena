@@ -88,6 +88,8 @@ class Settings:
     round_interval_seconds: int = int(os.environ.get("VIS_ARENA_ROUND_INTERVAL_SECONDS", "3600"))
     auto_start_peer_review: bool = os.environ.get("VIS_ARENA_AUTO_START_PEER_REVIEW", "false").lower() == "true"
     central_judge_submission_id: str | None = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_SUBMISSION_ID") or None
+    # Comma-separated task ids the central judge evaluates ("" = every task).
+    central_judge_tasks: str = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_TASKS", "")
 
 
 settings = Settings()
