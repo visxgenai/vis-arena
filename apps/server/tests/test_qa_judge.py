@@ -96,3 +96,53 @@ def test_central_evaluation_report_endpoint_is_gated():
     client = TestClient(app)
     response = client.get(f"/v1/jobs/{job_id}/evaluation-report")
     assert response.status_code == 404
+
+
+# --- two-aspect (QA + rubric) grading ---
+
+FULL_RUBRIC = [
+    {"id": "data_fidelity", "score": 4, "evidence": "totals consistent"},
+    {"id": "insightfulness", "score": 3, "evidence": "headline pattern"},
+    {"id": "narrative_coherence", "score": 4, "evidence": "clear arc"},
+    {"id": "visual_craft", "score": 5, "evidence": "clean encodings"},
+    {"id": "functionality", "score": 4, "evidence": "filters work"},
+]
+
+
+def test_rubric_score_complete_and_clamped():
+    assert qa.rubric_score(FULL_RUBRIC) == 80.0  # (4+3+4+5+4)*4
+    clamped = [dict(r, score=9) for r in FULL_RUBRIC]
+    assert qa.rubric_score(clamped) == 100.0
+
+
+def test_rubric_score_partial_is_none():
+    assert qa.rubric_score(FULL_RUBRIC[:4]) is None
+    assert qa.rubric_score(None) is None
+    broken = [dict(r) for r in FULL_RUBRIC]
+    broken[0]["score"] = "n/a"
+    assert qa.rubric_score(broken) is None
+
+
+def test_grade_combined_blends_and_reports_both():
+    answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}  # QA = 100
+    report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=0.5)
+    assert report["score"] == pytest.approx(90.0)  # 0.5*100 + 0.5*80
+    assert report["metadata"]["qa_score"] == 100.0
+    assert report["metadata"]["rubric_score"] == 80.0
+    assert len(report["criteria"]) == 5
+    dumped = json.dumps(report).lower()
+    for q in QUESTIONS:
+        assert q["question"].lower() not in dumped
+
+
+def test_grade_combined_rubric_missing_falls_back_to_qa():
+    report = qa.grade_combined(QUESTIONS, {"q2": "3"}, None, qa_weight=0.5)
+    assert report["score"] == pytest.approx(33.3, abs=0.1)
+    assert report["metadata"]["rubric_score"] is None
+    assert report["criteria"] == []
+
+
+def test_grade_combined_weight_extremes():
+    answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}
+    assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=1.0)["score"] == pytest.approx(100.0)
+    assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=0.0)["score"] == pytest.approx(80.0)

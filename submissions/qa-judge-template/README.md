@@ -15,3 +15,9 @@ The **real question set is private**. It is injected as `questions.json` when
 the judge bundle is built and is never committed here. The judge's public
 output is aggregate-only (score + per-question-id correctness); the public
 evaluation-report endpoint does not serve central-judge reports.
+
+**Two aspects, one inspection pass:** the judge (1) answers the private grounded
+questions from the rendered page (answers must be supported by visual evidence,
+not prose alone), and (2) rates the arena's five public storytelling criteria.
+Combined score = `qa_weight x QA + (1 - qa_weight) x rubric` (default 50/50,
+set in questions.json).
