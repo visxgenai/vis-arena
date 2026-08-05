@@ -593,6 +593,11 @@ def upload_runtime_files(job_id: str, reports_dir: Path, work_dir: Path) -> dict
         evaluation_report_s3_key = f"{evaluation_s3_prefix}/report.json"
         upload_s3_file(evaluation_report, evaluation_report_s3_key, "application/json")
 
+    # Judge screenshots (visual audit trail): every central-judge verdict should be
+    # inspectable after the fact, not reconstructed from text claims.
+    for shot in sorted(work_dir.rglob("judge_screenshot_*.jpg"))[:20]:
+        upload_s3_file(shot, f"{evaluation_s3_prefix}/screenshots/{shot.name}", "image/jpeg")
+
     return {
         "generation_s3_prefix": generation_s3_prefix,
         "evaluation_s3_prefix": evaluation_s3_prefix,
