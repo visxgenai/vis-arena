@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from typing import Any
@@ -189,7 +190,13 @@ def _invoke_converse(payload: LLMMessageRequest, max_tokens: int, model_id: str)
 
 def _converse_text(value: Any) -> str:
     if isinstance(value, list):
-        return "\n".join(str(item.get("text") if isinstance(item, dict) else item) for item in value)
+        parts = []
+        for item in value:
+            if isinstance(item, dict) and item.get("type") in ("image", "image_url"):
+                parts.append("[image omitted: this model has no vision support]")
+            else:
+                parts.append(str(item.get("text") if isinstance(item, dict) else item))
+        return "\n".join(parts)
     return str(value or "")
 
 
@@ -319,7 +326,11 @@ def _anthropic_body(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                         {
                             "type": "tool_result",
                             "tool_use_id": message.get("tool_call_id"),
-                            "content": str(message.get("content") or ""),
+                            "content": (
+                                _content_blocks(message["content"])
+                                if isinstance(message.get("content"), list)
+                                else str(message.get("content") or "")
+                            ),
                         }
                     ],
                 }
@@ -328,7 +339,7 @@ def _anthropic_body(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
         if role == "assistant":
             bedrock_messages.append({"role": "assistant", "content": _assistant_content(message)})
             continue
-        bedrock_messages.append({"role": "user", "content": _text_content(message.get("content"))})
+        bedrock_messages.append({"role": "user", "content": _content_blocks(message.get("content"))})
 
     body: dict[str, Any] = {
         "anthropic_version": "bedrock-2023-05-31",
@@ -349,6 +360,36 @@ def _anthropic_body(messages: list[dict[str, Any]], tools: list[dict[str, Any]],
             body["tool_choice"] = {"type": "tool", "name": choice[1]}
         # None: omit — Bedrock defaults to auto.
     return body
+
+
+_IMAGE_DATA_URL = re.compile(r"^data:(image/(?:png|jpeg|jpg|gif|webp));base64,([A-Za-z0-9+/=\s]+)$")
+MAX_IMAGE_B64_CHARS = 7_000_000  # ~5MB decoded, Anthropic's per-image limit
+
+
+def _content_blocks(value: Any) -> list[dict[str, Any]]:
+    """OpenAI-style message content (string or parts list) -> Anthropic content blocks.
+
+    Text parts pass through; image_url parts (data: URLs) become base64 image
+    blocks so vision-capable judges can actually SEE what they screenshot."""
+    if not isinstance(value, list):
+        return [{"type": "text", "text": str(value or "")}]
+    blocks: list[dict[str, Any]] = []
+    for item in value:
+        if isinstance(item, dict) and item.get("type") == "image_url":
+            url = str((item.get("image_url") or {}).get("url") or "")
+            match = _IMAGE_DATA_URL.match(url)
+            if not match:
+                raise HTTPException(status_code=400, detail="image_url must be a data:image/...;base64 URL")
+            data = re.sub(r"\s", "", match.group(2))
+            if len(data) > MAX_IMAGE_B64_CHARS:
+                raise HTTPException(status_code=400, detail="image too large (max ~5MB decoded)")
+            media = "image/jpeg" if match.group(1) == "image/jpg" else match.group(1)
+            blocks.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": data}})
+        elif isinstance(item, dict) and item.get("type") == "image":
+            blocks.append(item)  # Anthropic-native block passes through
+        else:
+            blocks.append({"type": "text", "text": str(item.get("text") if isinstance(item, dict) else item)})
+    return blocks or [{"type": "text", "text": ""}]
 
 
 def _text_content(value: Any) -> list[dict[str, str]]:
@@ -643,6 +684,8 @@ def _preview(value: str) -> str:
 
 
 def _truncate(value: Any) -> Any:
+    if isinstance(value, dict) and value.get("type") in ("image", "image_url"):
+        return {"type": "image", "note": "[image data omitted from trajectory]"}
     if isinstance(value, str):
         return _preview(value)
     if isinstance(value, list):

@@ -57,13 +57,16 @@ given an interactive data-visualization page and a list of factual questions.
 
 You judge TWO aspects in one inspection:
 
-ASPECT 1 — Questions. Answer every question using ONLY what the rendered page
-communicates: visible text, labels, charts, tooltips, and what appears after
-you interact (click, filter, hover). An answer only counts if it is supported
-by VISUAL evidence (a chart, labelled mark, or interaction result) — prose-only
-answer text with no supporting visualization does not count. Do NOT read page
-source, <script> contents, or embedded raw data — if the visualization does not
-communicate the answer, reply "unknown".
+ASPECT 1 — Questions. FIRST take a screenshot and LOOK at the page; screenshot
+again after every meaningful interaction. Answer every question using ONLY what
+you can SEE in the rendered page: charts, labelled marks, tooltips, and what
+appears after you interact (click, filter, hover). An answer only counts if it
+is supported by evidence VISIBLE IN YOUR SCREENSHOTS — a big text callout above
+a blank or unrendered chart is NOT visual evidence; in that case answer
+"unknown". Trust the mechanical RENDER STATS that accompany each screenshot:
+if no svg has drawn content and no canvas has painted pixels, the page has no
+working visualizations, whatever its text claims. Do NOT read page source,
+<script> contents, or embedded raw data.
 
 ASPECT 2 — Rubric. Rate each criterion 1-5:
 - data_fidelity: displayed values/totals/trends internally consistent and
@@ -77,9 +80,11 @@ ASPECT 2 — Rubric. Rate each criterion 1-5:
 - functionality: interactive controls you ACTUALLY exercised work. 1 broken -
   5 all work and meaningfully aid analysis.
 
-Use the playwright tool (PYTHON, playwright.sync_api; the page URL is in the
-VIS_ARENA_ARTIFACT_URL env var) to open and interact with the page. Extract
-visible text with locators or document.body.innerText — never page.content().
+Rate the rubric from what you SEE in the screenshots, not from page text alone
+— e.g. data_fidelity and visual_craft cannot exceed 2 if no chart actually
+rendered. Use the screenshot tool as your eyes, and the playwright tool
+(PYTHON, playwright.sync_api; page URL in the VIS_ARENA_ARTIFACT_URL env var)
+for interactions and targeted text checks — never page.content().
 
 When done, call finish with one short answer per question id (a name, a number,
 or a year — no sentences) AND the five rubric ratings with one-line evidence."""
@@ -313,6 +318,20 @@ def _collect_judgment(
                 },
             },
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "screenshot",
+                "description": "Capture the rendered page and SEE it (returns the image plus mechanical render stats: which svg/canvas elements actually drew). ALWAYS use this before answering, and again after interactions.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "full_page": {"type": "boolean", "description": "capture the full page height (default: viewport only)"},
+                        "wait_ms": {"type": "integer", "description": "extra render wait before capture (default 2500)"},
+                    },
+                },
+            },
+        },
         {"type": "function", "function": {"name": "finish", "description": "Submit one short answer per question id AND all five rubric ratings.", "parameters": finish_schema}},
     ]
 
@@ -338,12 +357,92 @@ def _collect_judgment(
             if function.get("name") == "finish":
                 answers = {row.get("id"): row.get("answer") for row in args.get("answers", [])}
                 return answers, args.get("rubric") or []
+            if function.get("name") == "screenshot":
+                content, error = _take_screenshot(
+                    workdir, artifact_url,
+                    full_page=bool(args.get("full_page")),
+                    wait_ms=int(args.get("wait_ms") or 2500),
+                )
+                messages.append({"role": "tool", "tool_call_id": call["id"], "content": content if content else error})
+                continue
             if function.get("name") == "playwright":
                 output = _run_playwright(args.get("script") or "", workdir, artifact_url)
             else:
                 output = f"Unknown tool: {function.get('name')}"
             messages.append({"role": "tool", "tool_call_id": call["id"], "content": output[:12000]})
     return {}, []
+
+
+
+_SCREENSHOT_SCRIPT = """
+import base64, json, os, sys
+from playwright.sync_api import sync_playwright
+
+url, out_path, full_page, wait_ms = sys.argv[1], sys.argv[2], sys.argv[3] == "1", int(sys.argv[4])
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.goto(url, wait_until="load", timeout=60000)
+    page.wait_for_timeout(wait_ms)
+    stats = page.evaluate(\"\"\"() => {
+      const svgs=[...document.querySelectorAll('svg')].map(s=>{const r=s.getBoundingClientRect();return {w:r.width|0,h:r.height|0,children:s.children.length}});
+      const canv=[...document.querySelectorAll('canvas')].map(c=>{const r=c.getBoundingClientRect();
+        let painted='unknown'; try{const x=c.getContext('2d');const d=x.getImageData(0,0,Math.min(80,c.width||1),Math.min(80,c.height||1)).data;painted=Array.from(d).some(v=>v!==0);}catch(e){}
+        return {w:r.width|0,h:r.height|0,painted}});
+      const ext=[...document.querySelectorAll('script[src],link[href]')].map(e=>e.src||e.href).filter(u=>u&&!u.includes(location.host));
+      return {svg:svgs, canvas:canv, external_resources:ext};
+    }\"\"\")
+    page.screenshot(path=out_path, type="jpeg", quality=70, full_page=full_page)
+    browser.close()
+data = base64.b64encode(open(out_path, "rb").read()).decode()
+print(json.dumps({"stats": stats, "b64": data}))
+"""
+
+_screenshot_count = 0
+
+
+def _take_screenshot(workdir: Path, artifact_url: str, full_page: bool = False, wait_ms: int = 2500):
+    """Deterministic capture: render stats (what ACTUALLY painted) + a JPEG the model can see.
+
+    The JPEG is also saved into the job workdir so it uploads with the runtime
+    files — every judgment leaves a visual audit trail.
+    Returns (content_list, None) on success or (None, error_string) on failure.
+    """
+    global _screenshot_count
+    _screenshot_count += 1
+    workdir.mkdir(parents=True, exist_ok=True)
+    script = workdir / ".qa_judge_screenshot.py"
+    script.write_text(_SCREENSHOT_SCRIPT, encoding="utf-8")
+    out = workdir / f"judge_screenshot_{_screenshot_count}.jpg"
+    try:
+        completed = subprocess.run(
+            [sys.executable, str(script), artifact_url, str(out), "1" if full_page else "0", str(int(wait_ms))],
+            cwd=str(workdir), text=True, errors="replace",
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=180,
+        )
+    except subprocess.TimeoutExpired:
+        return None, "screenshot error: page render exceeded 180s"
+    if completed.returncode != 0:
+        return None, f"screenshot error: {completed.stdout[-1500:]}"
+    try:
+        payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return None, f"screenshot error: unparseable output: {completed.stdout[-500:]}"
+    stats = payload["stats"]
+    rendered_svg = sum(1 for x in stats.get("svg", []) if x.get("children", 0) > 0)
+    painted_canvas = sum(1 for x in stats.get("canvas", []) if x.get("painted") is True)
+    summary = (
+        f"RENDER STATS (mechanically measured): svg elements {len(stats.get('svg', []))} "
+        f"(with drawn content: {rendered_svg}), canvas elements {len(stats.get('canvas', []))} "
+        f"(with painted pixels: {painted_canvas}), external resource refs: "
+        f"{stats.get('external_resources', [])}. If nothing is drawn/painted, the page has NO "
+        f"working visualizations regardless of its text."
+    )
+    content = [
+        {"type": "text", "text": summary},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{payload['b64']}"}},
+    ]
+    return content, None
 
 
 _JS_HINTS = ("require(", "=>", "document.", "const ", "let ", "async function")
