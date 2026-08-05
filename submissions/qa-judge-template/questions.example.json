@@ -26,5 +26,6 @@
       "accept": []
     }
   ],
-  "qa_weight": 0.5
+  "qa_weight": 0.5,
+  "combine": "sum"
 }

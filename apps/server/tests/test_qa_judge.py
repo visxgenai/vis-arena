@@ -123,26 +123,31 @@ def test_rubric_score_partial_is_none():
     assert qa.rubric_score(broken) is None
 
 
-def test_grade_combined_blends_and_reports_both():
+def test_grade_combined_default_direct_sum():
     answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}  # QA = 100
-    report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=0.5)
-    assert report["score"] == pytest.approx(90.0)  # 0.5*100 + 0.5*80
+    report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC)
+    assert report["score"] == pytest.approx(180.0)  # 100 + 80, direct sum
+    assert report["max_score"] == 200
     assert report["metadata"]["qa_score"] == 100.0
     assert report["metadata"]["rubric_score"] == 80.0
+    assert report["metadata"]["combine"] == "sum"
     assert len(report["criteria"]) == 5
     dumped = json.dumps(report).lower()
     for q in QUESTIONS:
         assert q["question"].lower() not in dumped
 
 
+def test_grade_combined_weighted_mode_still_available():
+    answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}
+    report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, combine="weighted", qa_weight=0.5)
+    assert report["score"] == pytest.approx(90.0)  # 0.5*100 + 0.5*80
+    assert report["max_score"] == 100
+    assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, combine="weighted", qa_weight=1.0)["score"] == pytest.approx(100.0)
+
+
 def test_grade_combined_rubric_missing_falls_back_to_qa():
-    report = qa.grade_combined(QUESTIONS, {"q2": "3"}, None, qa_weight=0.5)
+    report = qa.grade_combined(QUESTIONS, {"q2": "3"}, None)
     assert report["score"] == pytest.approx(33.3, abs=0.1)
+    assert report["max_score"] == 100
     assert report["metadata"]["rubric_score"] is None
     assert report["criteria"] == []
-
-
-def test_grade_combined_weight_extremes():
-    answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}
-    assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=1.0)["score"] == pytest.approx(100.0)
-    assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, qa_weight=0.0)["score"] == pytest.approx(80.0)

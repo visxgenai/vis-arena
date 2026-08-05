@@ -153,21 +153,30 @@ def grade_combined(
     questions: list[dict[str, Any]],
     answers: dict[str, Any],
     rubric: list[dict[str, Any]] | None,
+    combine: str = "sum",
     qa_weight: float = 0.5,
 ) -> dict[str, Any]:
     """Two-aspect report: QA correctness + storytelling rubric.
 
+    combine="sum" (default): the two 0-100 aspects add directly (max 200).
+    combine="weighted": qa_weight x QA + (1 - qa_weight) x rubric (max 100) —
+    kept as the adjustable alternative.
     Rubric criteria/evidence are public information (the arena's own template
     rubric); the QA aspect stays aggregate-only.
     """
     qa = grade(questions, answers)
     rscore = rubric_score(rubric)
+    max_score = 100
     if rscore is None:
         combined = qa["score"]
         blend = "QA only — rubric incomplete"
-    else:
+    elif combine == "weighted":
         combined = round(qa_weight * qa["score"] + (1.0 - qa_weight) * rscore, 1)
         blend = f"{round(qa_weight * 100)}% QA + {round((1.0 - qa_weight) * 100)}% rubric"
+    else:
+        combined = round(qa["score"] + rscore, 1)
+        max_score = 200
+        blend = "QA + rubric, direct sum"
     criteria = []
     if rscore is not None:
         by_id = {str(r.get("id")): r for r in rubric or []}
@@ -182,10 +191,10 @@ def grade_combined(
         ]
     return {
         "score": combined,
-        "max_score": 100,
+        "max_score": max_score,
         "summary": (
             f"Central judge ({blend}): QA {qa['score']}/100, rubric "
-            f"{'-' if rscore is None else rscore}/100 -> combined {combined}/100."
+            f"{'-' if rscore is None else rscore}/100 -> combined {combined}/{max_score}."
         ),
         "criteria": criteria,
         "per_question": qa["per_question"],
@@ -193,6 +202,7 @@ def grade_combined(
             "judge": "qa-judge",
             "qa_score": qa["score"],
             "rubric_score": rscore,
+            "combine": combine,
             "qa_weight": qa_weight,
             "n_questions": len(questions),
         },
@@ -222,9 +232,10 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
     path = questions_path(base)
     questions = load_questions(path)
     config = json.loads(path.read_text(encoding="utf-8"))
+    combine = str(config.get("combine", "sum"))
     qa_weight = float(config.get("qa_weight", 0.5))
     answers, rubric = _collect_judgment(questions, workdir, artifact_url)
-    return grade_combined(questions, answers, rubric, qa_weight)
+    return grade_combined(questions, answers, rubric, combine, qa_weight)
 
 
 # --------------------------------------------------------------------------
