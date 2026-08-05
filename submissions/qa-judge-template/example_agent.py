@@ -26,7 +26,11 @@ CLOUD_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 LOCAL_MODEL = "gpt-5.5"
 DEFAULT_MODEL = CLOUD_MODEL if os.environ.get("VIS_ARENA_JOB_ID") else LOCAL_MODEL
 
-MAX_MODEL_CALLS = 14
+# Effectively uncapped: the judge explores as long as it needs; the real stop is the
+# per-job token budget. When remaining tokens run low (or at the generous call
+# backstop) the loop forces a final answer so a score is ALWAYS produced.
+MAX_MODEL_CALLS = 60
+MIN_REMAINING_TOKENS = 60_000
 
 # The judge scores two aspects from ONE exploration pass:
 #   1. QA — does the visualization surface correct answers to grounded questions?
@@ -297,7 +301,8 @@ def _collect_judgment(
 
     for call_index in range(1, MAX_MODEL_CALLS + 1):
         tool_choice: str | dict[str, Any] = "auto"
-        if call_index == MAX_MODEL_CALLS:
+        remaining = getattr(client, "remaining_tokens", None)
+        if call_index == MAX_MODEL_CALLS or (remaining is not None and remaining < MIN_REMAINING_TOKENS):
             messages.append({"role": "user", "content": "FINAL CALL: call finish NOW with your best answer for every question id (use \"unknown\" where the page did not communicate it) and all five rubric ratings."})
             tool_choice = {"type": "function", "function": {"name": "finish"}}
         message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice=tool_choice)

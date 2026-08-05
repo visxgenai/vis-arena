@@ -20,6 +20,8 @@ from openai import OpenAI
 class OpenAIChatClient:
     def __init__(self) -> None:
         self.client = OpenAI()
+        # No per-job budget locally; the judge loop reads this to know when to wrap up.
+        self.remaining_tokens: int | None = None
 
     def create(
         self,
@@ -44,6 +46,9 @@ class ArenaChatClient:
 
         self.job_id = os.environ["VIS_ARENA_JOB_ID"]
         self.purpose = purpose
+        # Per-job tokens left after the latest call (broker reports it every response);
+        # the judge loop forces a final answer before the hard 429 would void the run.
+        self.remaining_tokens: int | None = None
         self.client = VisArenaClient(
             base_url=os.environ.get("VIS_ARENA_SERVER_URL", "http://host.docker.internal:8000"),
             token=os.environ["VIS_ARENA_API_TOKEN"],
@@ -69,6 +74,7 @@ class ArenaChatClient:
             purpose=self.purpose,
             max_tokens=8192,
         )
+        self.remaining_tokens = response.remaining_submission_tokens
         return response.message
 
 
