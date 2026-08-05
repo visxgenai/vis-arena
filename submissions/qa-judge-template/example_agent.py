@@ -112,8 +112,8 @@ def is_correct(question: dict[str, Any], given: Any) -> bool:
         return bool(expected_nums) and _numbers_in(normalized) == expected_nums
     if normalized in accepted:
         return True
-    # Tolerate short surrounding words ("it is ivy echos") but never bare substrings
-    # of a longer different name.
+    # Tolerate short surrounding words ("it is the example dashboard") but never
+    # bare substrings of a longer different name.
     return any(acc and re.search(rf"(^|\s){re.escape(acc)}($|\s)", normalized) for acc in accepted)
 
 
