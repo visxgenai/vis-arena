@@ -26,6 +26,21 @@ CLOUD_MODEL = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 LOCAL_MODEL = "gpt-5.5"
 DEFAULT_MODEL = CLOUD_MODEL if os.environ.get("VIS_ARENA_JOB_ID") else LOCAL_MODEL
 
+# The judge model is configurable per question set ("model" in questions.json):
+# an alias below or a full Bedrock model id. Haiku for cheap continuous use;
+# switch to "sonnet" for the final judging run.
+MODEL_ALIASES = {
+    "haiku": "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+    "sonnet": "global.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    "opus": "global.anthropic.claude-opus-4-8",
+}
+
+
+def resolve_model(value: Any) -> str:
+    if not value:
+        return DEFAULT_MODEL
+    return MODEL_ALIASES.get(str(value).strip().lower(), str(value))
+
 # Effectively uncapped: the judge explores as long as it needs; the real stop is the
 # per-job token budget. When remaining tokens run low (or at the generous call
 # backstop) the loop forces a final answer so a score is ALWAYS produced.
@@ -238,7 +253,8 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
     config = json.loads(path.read_text(encoding="utf-8"))
     combine = str(config.get("combine", "sum"))
     qa_weight = float(config.get("qa_weight", 0.5))
-    answers, rubric = _collect_judgment(questions, workdir, artifact_url)
+    model = resolve_model(config.get("model"))
+    answers, rubric = _collect_judgment(questions, workdir, artifact_url, model)
     return grade_combined(questions, answers, rubric, combine, qa_weight)
 
 
@@ -247,11 +263,12 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 def _collect_judgment(
-    questions: list[dict[str, Any]], workdir: Path, artifact_url: str
+    questions: list[dict[str, Any]], workdir: Path, artifact_url: str, model: str = ""
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     from llm_client import make_llm_client  # lazy: grading functions stay importable without SDK deps
 
     client = make_llm_client("evaluation")
+    model = model or DEFAULT_MODEL
     question_lines = "\n".join(f"- {q['id']}: {q['question']}" for q in questions)
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": JUDGE_PROMPT},
@@ -305,7 +322,7 @@ def _collect_judgment(
         if call_index == MAX_MODEL_CALLS or (remaining is not None and remaining < MIN_REMAINING_TOKENS):
             messages.append({"role": "user", "content": "FINAL CALL: call finish NOW with your best answer for every question id (use \"unknown\" where the page did not communicate it) and all five rubric ratings."})
             tool_choice = {"type": "function", "function": {"name": "finish"}}
-        message = client.create(model=DEFAULT_MODEL, messages=messages, tools=tools, tool_choice=tool_choice)
+        message = client.create(model=model, messages=messages, tools=tools, tool_choice=tool_choice)
         messages.append(message)
         calls = message.get("tool_calls") or []
         if not calls:

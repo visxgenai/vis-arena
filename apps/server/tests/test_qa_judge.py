@@ -151,3 +151,11 @@ def test_grade_combined_rubric_missing_falls_back_to_qa():
     assert report["max_score"] == 100
     assert report["metadata"]["rubric_score"] is None
     assert report["criteria"] == []
+
+
+def test_model_config_resolution():
+    assert qa.resolve_model("sonnet") == "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    assert qa.resolve_model("Haiku") == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    assert qa.resolve_model("custom.model-id:7") == "custom.model-id:7"  # full ids pass through
+    assert qa.resolve_model(None) == qa.DEFAULT_MODEL
+    assert qa.resolve_model("") == qa.DEFAULT_MODEL

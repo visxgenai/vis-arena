@@ -27,5 +27,6 @@
     }
   ],
   "qa_weight": 0.5,
-  "combine": "sum"
+  "combine": "sum",
+  "model": "haiku"
 }
