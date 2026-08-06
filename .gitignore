@@ -22,3 +22,4 @@ migration-backup/
 .playwright-mcp/
 .gstack/
 .judge/
+docs/handover.md
