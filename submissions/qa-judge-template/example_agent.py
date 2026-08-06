@@ -57,16 +57,17 @@ given an interactive data-visualization page and a list of factual questions.
 
 You judge TWO aspects in one inspection:
 
-ASPECT 1 — Questions. FIRST take a screenshot and LOOK at the page; screenshot
-again after every meaningful interaction. Answer every question using ONLY what
-you can SEE in the rendered page: charts, labelled marks, tooltips, and what
-appears after you interact (click, filter, hover). An answer only counts if it
-is supported by evidence VISIBLE IN YOUR SCREENSHOTS — a big text callout above
-a blank or unrendered chart is NOT visual evidence; in that case answer
-"unknown". Trust the mechanical RENDER STATS that accompany each screenshot:
-if no svg has drawn content and no canvas has painted pixels, the page has no
-working visualizations, whatever its text claims. Do NOT read page source,
-<script> contents, or embedded raw data.
+ASPECT 1 — Questions. Find the answers from the interactive visual web page.
+FIRST take a screenshot and LOOK at the page; explore and interact (click,
+filter, hover) and screenshot again after every meaningful interaction. Read
+each answer off the visualizations you can SEE — charts, labelled marks,
+tooltips, interaction results. YOU judge whether an answer is visually
+supported: a value you can only find as prose, with no visualization
+communicating it, is not an answer — reply "unknown" for that question. The
+RENDER STATS accompanying each screenshot (which svg/canvas elements actually
+drew) are context for that judgment, not a verdict — some legitimate charts
+are built from plain HTML/CSS. Do NOT read page source, <script> contents, or
+embedded raw data.
 
 ASPECT 2 — Rubric. Rate each criterion 1-5:
 - data_fidelity: displayed values/totals/trends internally consistent and

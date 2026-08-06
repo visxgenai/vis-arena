@@ -95,7 +95,11 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
     questions = key["questions"]
     combine = str(key.get("combine", "sum"))
     qa_weight = float(key.get("qa_weight", 0.5))
-    require_rendered = bool(key.get("require_rendered_charts", True))
+    # Visual-evidence judgment belongs to the (vision-equipped) judge agent, not a
+    # deterministic pixel rule — e.g. a legitimate div-based HTML/CSS chart has zero
+    # svg/canvas and would be zeroed unfairly. The mechanical gate stays available as
+    # an explicit opt-in only.
+    require_rendered = bool(key.get("require_rendered_charts", False))
 
     answers_list = raw_report.get("answers") or []
     answers = {str(a.get("id")): a.get("answer") for a in answers_list if isinstance(a, dict)}
@@ -108,6 +112,8 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
     if require_rendered and charts is False:
         qa = 0.0
         notes.append("QA gated to 0: no rendered visualizations (0 drawn svg / 0 painted canvas) — answers were prose-only by definition")
+    if charts is False:
+        notes.append("info: probe saw no drawn svg/painted canvas — judge's visual assessment governs")
     if require_rendered and charts is None:
         notes.append("warning: no render stats in judge report — visual gate could not run")
     if not raw_report.get("screenshots_taken"):

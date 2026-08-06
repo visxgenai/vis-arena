@@ -7,12 +7,12 @@ from vis_arena_server import judge_grading as jg
 
 KEY = {
     "combine": "sum",
-    "require_rendered_charts": True,
     "questions": [
         {"id": "q1", "type": "text", "question": "top company?", "answer": "Acme Corp", "accept": ["acme"]},
         {"id": "q2", "type": "number", "question": "how many?", "answer": "7", "accept": []},
     ],
 }
+GATED_KEY = {**KEY, "require_rendered_charts": True}
 RUBRIC = [
     {"id": "data_fidelity", "score": 4, "evidence": "x"},
     {"id": "insightfulness", "score": 3, "evidence": "x"},
@@ -41,17 +41,31 @@ def test_full_marks_with_rendered_charts():
     assert graded["max_score"] == 200
 
 
-def test_qa_gated_to_zero_without_rendered_charts():
+def test_blank_stats_do_not_gate_by_default():
+    # Visual-evidence judgment is the judge agent's call; blank probe stats are
+    # informational only (e.g. div-based HTML/CSS charts have zero svg/canvas).
+    graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}], stats=BLANK))
+    assert graded["metadata"]["qa_score"] == 100.0
+    assert graded["metadata"]["charts_rendered"] is False
+    assert graded["score"] == pytest.approx(180.0)
+    assert any("visual assessment governs" in n for n in graded["metadata"]["notes"])
+
+
+def test_gate_applies_only_when_key_opts_in(monkeypatch):
+    monkeypatch.setattr(jg, "_load_key", lambda task_id: GATED_KEY)
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}], stats=BLANK))
     assert graded["metadata"]["qa_score"] == 0.0
-    assert graded["metadata"]["charts_rendered"] is False
     assert graded["score"] == pytest.approx(80.0)  # rubric only survives
     assert "gated" in graded["summary"]
 
 
-def test_missing_stats_warns_but_does_not_gate():
+def test_missing_stats_warns_only_when_gate_opted_in(monkeypatch):
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme"}], stats=None))
     assert graded["metadata"]["qa_score"] == 50.0
+    assert not any("could not run" in n for n in graded["metadata"]["notes"])
+
+    monkeypatch.setattr(jg, "_load_key", lambda task_id: GATED_KEY)
+    graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme"}], stats=None))
     assert any("could not run" in n for n in graded["metadata"]["notes"])
 
 
