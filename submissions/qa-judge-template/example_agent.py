@@ -98,7 +98,7 @@ def load_questions(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     questions = data["questions"]
     for q in questions:
-        for field in ("id", "type", "question", "answer"):
+        for field in ("id", "type", "question"):  # cloud bundles are STRIPPED: no answers ride along
             if field not in q:
                 raise ValueError(f"question missing field {field!r}")
     return questions
@@ -106,7 +106,14 @@ def load_questions(path: Path) -> list[dict[str, Any]]:
 
 def questions_path(base: Path) -> Path:
     real = base / "questions.json"
-    return real if real.exists() else base / "questions.example.json"
+    if real.exists():
+        return real
+    # NEVER silently judge against the dummy fixture: a broken final bundle must fail
+    # loudly, not produce plausible-looking scores. Local mechanism testing may opt in.
+    if os.environ.get("VIS_ARENA_JOB_ID") or os.environ.get("QA_JUDGE_ALLOW_EXAMPLE") != "1":
+        raise SystemExit("questions.json missing from judge bundle — refusing to judge "
+                         "(local testing: set QA_JUDGE_ALLOW_EXAMPLE=1 to use the example fixture)")
+    return base / "questions.example.json"
 
 
 def normalize_answer(value: Any) -> str:
@@ -256,11 +263,20 @@ def evaluate(workdir: Path, artifact_url: str) -> dict[str, Any]:
     path = questions_path(base)
     questions = load_questions(path)
     config = json.loads(path.read_text(encoding="utf-8"))
-    combine = str(config.get("combine", "sum"))
-    qa_weight = float(config.get("qa_weight", 0.5))
     model = resolve_model(config.get("model"))
     answers, rubric = _collect_judgment(questions, workdir, artifact_url, model)
-    return grade_combined(questions, answers, rubric, combine, qa_weight)
+    # Raw, UNGRADED report: the answer key never enters this container, so grading
+    # (QA matching, gates, combination) happens server-side at job completion.
+    return {
+        "score": None,
+        "max_score": 200,
+        "summary": "central judge raw report — graded server-side against the private key",
+        "answers": [{"id": qid, "answer": answers.get(qid, "")} for qid in (q["id"] for q in questions)],
+        "rubric": rubric,
+        "render_stats": _last_render_stats,
+        "screenshots_taken": _screenshot_count,
+        "metadata": {"judge": "qa-judge", "model": model, "n_questions": len(questions)},
+    }
 
 
 # --------------------------------------------------------------------------
@@ -335,6 +351,8 @@ def _collect_judgment(
         {"type": "function", "function": {"name": "finish", "description": "Submit one short answer per question id AND all five rubric ratings.", "parameters": finish_schema}},
     ]
 
+    finish_rejections = 0
+    screenshot_failures = 0
     for call_index in range(1, MAX_MODEL_CALLS + 1):
         tool_choice: str | dict[str, Any] = "auto"
         remaining = getattr(client, "remaining_tokens", None)
@@ -355,14 +373,31 @@ def _collect_judgment(
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": f"Tool argument JSON error: {exc}"})
                 continue
             if function.get("name") == "finish":
-                answers = {row.get("id"): row.get("answer") for row in args.get("answers", [])}
-                return answers, args.get("rubric") or []
+                answers = {str(row.get("id")): row.get("answer") for row in args.get("answers", [])}
+                rubric = args.get("rubric") or []
+                problems = []
+                if _screenshot_count == 0 and screenshot_failures < 2:
+                    problems.append("you have not taken a single screenshot — take one and LOOK at the page first")
+                missing = [q["id"] for q in questions if q["id"] not in answers]
+                if missing:
+                    problems.append(f"missing answers for question ids: {', '.join(missing)}")
+                rubric_ids = {str(r.get("id")) for r in rubric}
+                if rubric_ids != set(RUBRIC_IDS):
+                    problems.append(f"rubric must contain exactly these ids: {', '.join(RUBRIC_IDS)}")
+                if problems and finish_rejections < 2:
+                    finish_rejections += 1
+                    messages.append({"role": "tool", "tool_call_id": call["id"],
+                                     "content": "finish REJECTED: " + "; ".join(problems) + ". Fix and call finish again."})
+                    continue
+                return answers, rubric
             if function.get("name") == "screenshot":
                 content, error = _take_screenshot(
                     workdir, artifact_url,
                     full_page=bool(args.get("full_page")),
                     wait_ms=int(args.get("wait_ms") or 2500),
                 )
+                if not content:
+                    screenshot_failures += 1
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": content if content else error})
                 continue
             if function.get("name") == "playwright":
@@ -387,7 +422,12 @@ with sync_playwright() as p:
     stats = page.evaluate(\"\"\"() => {
       const svgs=[...document.querySelectorAll('svg')].map(s=>{const r=s.getBoundingClientRect();return {w:r.width|0,h:r.height|0,children:s.children.length}});
       const canv=[...document.querySelectorAll('canvas')].map(c=>{const r=c.getBoundingClientRect();
-        let painted='unknown'; try{const x=c.getContext('2d');const d=x.getImageData(0,0,Math.min(80,c.width||1),Math.min(80,c.height||1)).data;painted=Array.from(d).some(v=>v!==0);}catch(e){}
+        let painted='unknown';
+        try{
+          const x=c.getContext('2d'); const W=c.width||1, H=c.height||1, S=60;
+          const spots=[[0,0],[Math.max(0,(W-S)>>1),Math.max(0,(H-S)>>1)],[Math.max(0,W-S),Math.max(0,H-S)]];
+          painted=spots.some(([px,py])=>{const d=x.getImageData(px,py,Math.min(S,W),Math.min(S,H)).data;return Array.from(d).some(v=>v!==0);});
+        }catch(e){}
         return {w:r.width|0,h:r.height|0,painted}});
       const ext=[...document.querySelectorAll('script[src],link[href]')].map(e=>e.src||e.href).filter(u=>u&&!u.includes(location.host));
       return {svg:svgs, canvas:canv, external_resources:ext};
@@ -399,6 +439,7 @@ print(json.dumps({"stats": stats, "b64": data}))
 """
 
 _screenshot_count = 0
+_last_render_stats: dict[str, Any] | None = None
 
 
 def _take_screenshot(workdir: Path, artifact_url: str, full_page: bool = False, wait_ms: int = 2500):
@@ -429,6 +470,8 @@ def _take_screenshot(workdir: Path, artifact_url: str, full_page: bool = False, 
     except (ValueError, IndexError):
         return None, f"screenshot error: unparseable output: {completed.stdout[-500:]}"
     stats = payload["stats"]
+    global _last_render_stats
+    _last_render_stats = stats
     rendered_svg = sum(1 for x in stats.get("svg", []) if x.get("children", 0) > 0)
     painted_canvas = sum(1 for x in stats.get("canvas", []) if x.get("painted") is True)
     summary = (

@@ -115,15 +115,22 @@ def _run_evaluate(workdir: Path) -> None:
             result = example_agent.evaluate(workdir, artifact_url) or {}
 
     task_id = _extract_task_id((workdir / "task.md").read_text(encoding="utf-8"))
-    score = float(result.get("score", 0))
+    raw_score = result.get("score")
     max_score = float(result.get("max_score", 100))
+    # Central judge reports are UNGRADED (score None): raw answers + rubric ride to the
+    # server, which grades them against the private key the container never holds.
+    score = None if raw_score is None else max(0.0, min(float(raw_score), max_score))
     _write_json(workdir / "evaluation.json", {
         "schema_version": "vis-arena.evaluation.v1",
         "task_id": task_id,
-        "score": max(0.0, min(score, max_score)),
+        "score": score,
         "max_score": max_score,
         "summary": str(result.get("summary", "")),
         "criteria": result.get("criteria", []),
+        "answers": result.get("answers", []),
+        "rubric": result.get("rubric", []),
+        "render_stats": result.get("render_stats"),
+        "screenshots_taken": result.get("screenshots_taken", 0),
         "browser": result.get("browser", {}),
         "artifacts": result.get("artifacts", {}),
         "metadata": (result.get("metadata") or {}) | {"evaluated_at": _now()},

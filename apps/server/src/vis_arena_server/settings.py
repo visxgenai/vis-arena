@@ -90,6 +90,8 @@ class Settings:
     central_judge_submission_id: str | None = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_SUBMISSION_ID") or None
     # Comma-separated task ids the central judge evaluates ("" = every task).
     central_judge_tasks: str = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_TASKS", "")
+    # S3 prefix holding per-task answer keys ({prefix}/{task_id}.json) — server-side grading only.
+    central_judge_keys_s3_prefix: str = os.environ.get("VIS_ARENA_CENTRAL_JUDGE_KEYS_S3_PREFIX", "judge/keys")
 
 
 settings = Settings()

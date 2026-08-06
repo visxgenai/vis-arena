@@ -19,5 +19,11 @@ evaluation-report endpoint does not serve central-judge reports.
 **Two aspects, one inspection pass:** the judge (1) answers the private grounded
 questions from the rendered page (answers must be supported by visual evidence,
 not prose alone), and (2) rates the arena's five public storytelling criteria.
-Combined score = `qa_weight x QA + (1 - qa_weight) x rubric` (default 50/50,
-set in questions.json).
+Default combination is a **direct sum: QA (0-100) + rubric (0-100), max 200**;
+a weighted mode (`combine: "weighted"` + `qa_weight`) exists as the alternative.
+
+**The container never holds the answer key.** Cloud bundles carry questions
+only; the judge returns raw answers, rubric ratings, screenshots, and
+mechanical render stats, and the SERVER grades them against a privately stored
+key. A compromised or prompt-injected judge therefore cannot read or leak
+answers — it can only emit wrong ones.

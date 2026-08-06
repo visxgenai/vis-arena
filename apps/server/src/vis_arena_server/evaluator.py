@@ -859,6 +859,21 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
         if not job:
             return
         job_type = job.get("job_type") or "generation"
+        if job_type == "central_evaluation":
+            # The judge container returns RAW answers (it never holds the key);
+            # grade here against the private key. Grading errors degrade to a
+            # loud unscored result instead of crashing job completion.
+            from .judge_grading import grade_central_result
+
+            try:
+                graded = grade_central_result(job["task_id"], result.get("result") or {})
+            except Exception as exc:  # key missing/broken — surface loudly, don't crash
+                graded = {"score": None, "max_score": 200,
+                          "summary": f"CENTRAL GRADING FAILED: {exc}",
+                          "raw_report": result.get("result")}
+            result = dict(result)
+            result["result"] = graded
+            result["score"] = graded.get("score")
         db.execute(
             """
             update jobs
