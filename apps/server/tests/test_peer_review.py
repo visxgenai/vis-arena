@@ -835,6 +835,48 @@ def test_worker_peer_review_uses_target_preview_url_and_reads_evaluation(tmp_pat
     assert result["result"] == {"score": 77}
 
 
+def test_participants_without_succeeded_artifact_do_not_review(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "peer_reviewers_per_artifact", 2)
+    window = ("2026-06-01T00:00:00+00:00", "2026-06-01T01:00:00+00:00")
+    fin = "2026-06-01T00:30:00+00:00"
+    dataset_id, task_ids = _insert_dataset(task_count=1)
+    task_id = task_ids[0]
+
+    owners, submissions = [], []
+    for _ in range(3):
+        owner = _insert_user()
+        submission = _insert_submission(owner, finalized_at=fin)
+        owners.append(owner)
+        submissions.append(submission)
+    # first two owners have succeeded artifacts; the third's generation failed
+    for submission in submissions[:2]:
+        job_id = _insert_generation_job(submission, dataset_id, task_id, status="succeeded")
+        with connect() as db:
+            db.execute(
+                "update jobs set preview_s3_key = ?, completed_at = ?, updated_at = ? where id = ?",
+                (f"jobs/{job_id}/generation/preview/index.html", now_iso(), now_iso(), job_id),
+            )
+    _insert_generation_job(submissions[2], dataset_id, task_id, status="failed")
+
+    round_id = rounds.open_round("No-Artifact Round", starts_at=window[0], ends_at=window[1])["id"]
+    rounds.close_round(round_id)
+    detail = rounds.start_peer_review(round_id)
+
+    # all three are snapshotted, but the artifact-less participant must neither
+    # receive reviews (no artifact) nor give them (no proof their agent runs)
+    assert {p["user_id"] for p in detail["participants"]} == set(owners)
+    with connect() as db:
+        reviewer_ids = {
+            row["reviewer_user_id"]
+            for row in db.execute(
+                "select reviewer_user_id from jobs where round_id = ? and job_type = 'peer_evaluation'",
+                (round_id,),
+            ).fetchall()
+        }
+    assert owners[2] not in reviewer_ids
+    assert reviewer_ids == {owners[0], owners[1]}
+
+
 def test_round_close_snapshots_latest_submission_per_user_without_regenerating() -> None:
     start = "2026-06-01T00:00:00+00:00"
     end = "2026-06-01T01:00:00+00:00"

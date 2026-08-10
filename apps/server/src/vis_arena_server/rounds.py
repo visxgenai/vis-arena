@@ -220,9 +220,14 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
             (round_id,),
         ).fetchall()
         cap = settings.peer_reviewers_per_artifact
+        # Only participants with a succeeded artifact of their own may review:
+        # a generation that never ran to completion is no evidence the agent
+        # works at all, and reviewers shape other people's scores.
+        artifact_owner_ids = {artifact["target_owner_id"] for artifact in artifacts}
+        reviewer_roster = [dict(p) for p in participants if p["user_id"] in artifact_owner_ids]
         for artifact in artifacts:
             for participant in select_peer_reviewers(
-                round_id, [dict(p) for p in participants], artifact["target_owner_id"], cap
+                round_id, reviewer_roster, artifact["target_owner_id"], cap
             ):
                 if carry_forward_peer_evaluation(
                     db,
