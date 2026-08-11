@@ -190,7 +190,12 @@ def run_peer_review_job(job: dict[str, Any], *, use_docker: bool = True, update_
         download_s3(job["submission_s3_key"], submission_zip)
         safe_extract_zip(submission_zip, submission_dir)
         copy_sdk(root / "sdk")
-        stage_task_workdirs(job["dataset_s3_key"], job["task_id"], staging_dir, work_dir, ("evaluate",))
+        # The central judge grades ONLY the rendered artifact: never hand it the
+        # raw dataset, or it can compute answers without looking at the page.
+        stage_task_workdirs(
+            job["dataset_s3_key"], job["task_id"], staging_dir, work_dir, ("evaluate",),
+            include_data=job.get("job_type") != "central_evaluation",
+        )
         reports_dir.mkdir(parents=True, exist_ok=True)
 
         write_container_script(root, "evaluation")
@@ -214,13 +219,16 @@ def run_peer_review_job(job: dict[str, Any], *, use_docker: bool = True, update_
         }
 
 
-def stage_task_workdirs(dataset_s3_key: str, task_id: str, staging_dir: Path, work_dir: Path, phases: tuple[str, ...]) -> None:
+def stage_task_workdirs(
+    dataset_s3_key: str, task_id: str, staging_dir: Path, work_dir: Path, phases: tuple[str, ...],
+    *, include_data: bool = True,
+) -> None:
     task_root = copy_task_data(dataset_s3_key, task_id, staging_dir)
     for phase in phases:
         phase_workdir = work_dir / phase
         phase_workdir.mkdir(parents=True, exist_ok=True)
         shutil.copy2(task_root / "task.md", phase_workdir / "task.md")
-        if (task_root / "data").exists():
+        if include_data and (task_root / "data").exists():
             shutil.copytree(task_root / "data", phase_workdir / "data", dirs_exist_ok=True)
 
 
@@ -861,16 +869,20 @@ def complete_job(job_id: str, result: dict[str, Any]) -> None:
         job_type = job.get("job_type") or "generation"
         if job_type == "central_evaluation":
             # The judge container returns RAW answers (it never holds the key);
-            # grade here against the private key. Grading errors degrade to a
-            # loud unscored result instead of crashing job completion.
-            from .judge_grading import grade_central_result
+            # grade here against the private key. Grading errors FAIL the job —
+            # an unscored finalist must never look like a completed one.
+            from . import judge_grading
 
             try:
-                graded = grade_central_result(job["task_id"], result.get("result") or {})
-            except Exception as exc:  # key missing/broken — surface loudly, don't crash
-                graded = {"score": None, "max_score": 200,
-                          "summary": f"CENTRAL GRADING FAILED: {exc}",
-                          "raw_report": result.get("result")}
+                graded = judge_grading.grade_central_result(job["task_id"], result.get("result") or {})
+            except Exception as exc:  # key missing/broken — fail closed
+                error = f"CENTRAL GRADING FAILED: {exc}"
+                db.execute(
+                    "update jobs set status = ?, error = ?, result_json = ?, completed_at = ?, updated_at = ? where id = ?",
+                    ("failed", error, json.dumps({"raw_report": result.get("result")}), now, now, job_id),
+                )
+                write_evaluation_job_failure(db, job, error, now)
+                return
             result = dict(result)
             result["result"] = graded
             result["score"] = graded.get("score")

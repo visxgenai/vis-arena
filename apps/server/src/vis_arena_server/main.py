@@ -239,7 +239,7 @@ def list_submission_jobs(submission_id: str, user: dict = Depends(current_user))
                    error, created_at, updated_at
             from jobs
             where (coalesce(job_type, 'generation') = 'generation' and submission_id = ?)
-               or (job_type in ('peer_review', 'peer_evaluation', 'central_evaluation') and generator_submission_id = ?)
+               or (job_type in ('peer_review', 'peer_evaluation') and generator_submission_id = ?)
             order by created_at desc
             """,
             (submission_id, submission_id),
