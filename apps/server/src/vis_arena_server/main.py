@@ -347,6 +347,90 @@ def internal_fail_job(job_id: str, payload: dict, request: Request) -> dict:
     return {"ok": True}
 
 
+@app.get("/v1/me/peer-reviews")
+def my_peer_reviews(user: dict = Depends(current_user)) -> dict:
+    """The caller's received reviews, grouped by round. Reviewer identities are
+    anonymized (Peer reviewer A/B/C per artifact, in review order) — participants
+    get the original scores and comments, never who wrote them."""
+    with connect() as db:
+        peer_rows = db.execute(
+            """
+            select e.round_id, e.artifact_job_id, e.status, e.score, e.result_json,
+                   e.is_carried_forward, e.created_at, aj.task_id,
+                   rr.name as round_name, rr.ends_at as round_ends_at
+            from evaluations e
+            join jobs aj on aj.id = e.artifact_job_id
+            join submissions s on s.id = aj.submission_id
+            left join review_rounds rr on rr.id = e.round_id
+            where s.owner_id = ? and e.evaluator_type = 'peer'
+            order by e.round_id, e.artifact_job_id, e.created_at
+            """,
+            (user["id"],),
+        ).fetchall()
+        artifact_ids = sorted({row["artifact_job_id"] for row in peer_rows})
+        self_by_artifact: dict[str, dict] = {}
+        if artifact_ids:
+            placeholders = ",".join("?" * len(artifact_ids))
+            for row in db.execute(
+                f"""
+                select artifact_job_id, status, score, result_json, created_at
+                from evaluations
+                where evaluator_type = 'self' and artifact_job_id in ({placeholders})
+                order by created_at
+                """,
+                artifact_ids,
+            ).fetchall():
+                self_by_artifact[row["artifact_job_id"]] = row  # last one wins (latest)
+
+    def detail(result_json: str | None) -> dict:
+        result = decode_json(result_json, None)
+        if not isinstance(result, dict):
+            return {"summary": None, "criteria": []}
+        criteria = [
+            {"id": c.get("id"), "score": c.get("score"), "max_score": c.get("max_score"),
+             "evidence": c.get("evidence")}
+            for c in result.get("criteria") or [] if isinstance(c, dict)
+        ]
+        return {"summary": result.get("summary"), "criteria": criteria}
+
+    rounds: dict[str, dict] = {}
+    letters_used: dict[tuple[str, str], int] = {}
+    seen_self: set[tuple[str, str]] = set()
+    for row in peer_rows:
+        round_key = row["round_id"]
+        group = rounds.setdefault(round_key, {
+            "round_id": round_key,
+            "round_name": row["round_name"] or "Earlier reviews",
+            "round_ends_at": row["round_ends_at"],
+            "items": [],
+        })
+        index = letters_used.get((round_key, row["artifact_job_id"]), 0)
+        letters_used[(round_key, row["artifact_job_id"])] = index + 1
+        letter = chr(ord("A") + index % 26) * (index // 26 + 1)
+        group["items"].append({
+            "task_id": row["task_id"],
+            "reviewer": f"Peer reviewer {letter}",
+            "status": row["status"],
+            "score": row["score"],
+            "carried_forward": bool(row["is_carried_forward"]),
+            **detail(row["result_json"]),
+        })
+        self_key = (round_key, row["artifact_job_id"])
+        self_row = self_by_artifact.get(row["artifact_job_id"])
+        if self_row is not None and self_key not in seen_self:
+            seen_self.add(self_key)
+            group["items"].append({
+                "task_id": row["task_id"],
+                "reviewer": "Self",
+                "status": self_row["status"],
+                "score": self_row["score"],
+                "carried_forward": False,
+                **detail(self_row["result_json"]),
+            })
+    ordered = sorted(rounds.values(), key=lambda item: item["round_ends_at"] or "", reverse=True)
+    return {"rounds": ordered}
+
+
 @app.get("/v1/submissions/{submission_id}/llm-usage")
 def get_submission_llm_usage(submission_id: str, user: dict = Depends(current_user)) -> dict:
     _require_submission_access(submission_id, user["id"])
