@@ -373,14 +373,35 @@ finish_phase() {
   echo "[$(date -Iseconds)] phase_end ${phase}" >> "$log"
   trace_event "$trace" phase_end "$phase"
 }
+retry_pypi() {
+  # PyPI's CDN intermittently 502s; a registry hiccup must not kill a real run
+  # (it killed 4 generation runs Aug 15-17 before the agent ever started).
+  attempt=1
+  while true; do
+    if "$@"; then return 0; fi
+    code=$?
+    if [ "$attempt" -ge 3 ]; then return "$code"; fi
+    echo "[deps] attempt ${attempt}/3 failed (exit ${code}); retrying in $((attempt * 20))s"
+    sleep $((attempt * 20))
+    attempt=$((attempt + 1))
+  done
+}
+prime_deps() {
+  # Resolve + install everything the agent steps will need, as a separate
+  # retried step — so infra failures surface as "deps", not as agent failures,
+  # and the later steps run against a warm cache.
+  retry_pypi uv run "$@" python -c pass
+}
 cd /arena/submission
 if [ "${VIS_ARENA_PHASE}" = "generation" ]; then
   if [ -f requirements.txt ]; then
-    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    retry_pypi python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase generation deps prime_deps --with-requirements requirements.txt --with-editable /arena/sdk
     run_phase generation info uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
     run_phase generation generate uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py generate /arena/work/generate
   elif [ -f pyproject.toml ]; then
-    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    retry_pypi python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase generation deps prime_deps --with-editable /arena/sdk --with-editable .
     run_phase generation info uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py info --output /arena/reports/generation/agent-info.json
     run_phase generation generate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py generate /arena/work/generate
   else
@@ -390,10 +411,12 @@ if [ "${VIS_ARENA_PHASE}" = "generation" ]; then
   finish_phase generation
 else
   if [ -f requirements.txt ]; then
-    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    retry_pypi python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase evaluation deps prime_deps --with-requirements requirements.txt --with-editable /arena/sdk
     run_phase evaluation evaluate uv run --with-requirements requirements.txt --with-editable /arena/sdk python /arena/submission/agent.py evaluate /arena/work/evaluate
   elif [ -f pyproject.toml ]; then
-    python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    retry_pypi python -m pip install --upgrade pip uv >/tmp/pip.log 2>&1 || cat /tmp/pip.log
+    run_phase evaluation deps prime_deps --with-editable /arena/sdk --with-editable .
     run_phase evaluation evaluate uv run --with-editable /arena/sdk --with-editable . python /arena/submission/agent.py evaluate /arena/work/evaluate
   else
     run_phase evaluation evaluate ./agent evaluate /arena/work/evaluate
@@ -447,6 +470,16 @@ def run_docker(root: Path, job: dict[str, Any], *, phase: str, artifact_url: str
         "bash",
         "/arena/run.sh",
     ]
+    if settings.evaluator_uv_cache_dir:
+        # Persistent package cache shared across jobs (docker resolves nested
+        # mounts by path depth, so ordering relative to /arena doesn't matter).
+        index = cmd.index("-w")
+        cmd[index:index] = [
+            "-e",
+            "PIP_CACHE_DIR=/arena/.uv-cache/pip",
+            "-v",
+            f"{settings.evaluator_uv_cache_dir}:/arena/.uv-cache",
+        ]
     if artifact_url:
         cmd[cmd.index("-v"):cmd.index("-v")] = ["-e", f"VIS_ARENA_ARTIFACT_URL={artifact_url}"]
     started_at = now_iso()

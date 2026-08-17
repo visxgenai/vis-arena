@@ -68,6 +68,9 @@ class Settings:
     s3_endpoint_url: str | None = os.environ.get("VIS_ARENA_S3_ENDPOINT_URL") or None
     presign_ttl_seconds: int = int(os.environ.get("VIS_ARENA_PRESIGN_TTL_SECONDS", "900"))
     evaluator_image: str = os.environ.get("VIS_ARENA_EVALUATOR_IMAGE", "mcr.microsoft.com/playwright/python:v1.60.0-noble")
+    # Host dir mounted as the containers' uv/pip cache ("" = ephemeral per-job cache).
+    # Persistent cache makes runs immune to PyPI CDN flakiness for known packages.
+    evaluator_uv_cache_dir: str = os.environ.get("VIS_ARENA_EVALUATOR_UV_CACHE_DIR", "")
     evaluator_network: str = os.environ.get("VIS_ARENA_EVALUATOR_NETWORK", "bridge")
     evaluator_timeout_seconds: int = int(os.environ.get("VIS_ARENA_EVALUATOR_TIMEOUT_SECONDS", "1800"))
     # Peer reviewers per artifact in a round (0 = every participant reviews every artifact).
