@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections import Counter
 import uuid
 from pathlib import Path
 from zipfile import ZipFile
@@ -1172,14 +1173,14 @@ def test_peer_review_reuses_completed_score_cells_for_unchanged_submissions() ->
 
 
 def test_start_peer_review_draws_reviewers_per_task(monkeypatch) -> None:
+    """Each task gets its own independent draw, so one reviewer is not dealt
+    both artifacts of the same participant (and workload stays balanced)."""
     monkeypatch.setattr(settings, "peer_reviewers_per_artifact", 2)
     fin = "2026-06-01T00:30:00+00:00"
     dataset_id, task_ids = _insert_dataset(task_count=2)
-    owners = []
-    for _ in range(5):
+    for _ in range(8):
         owner = _insert_user()
         submission = _insert_submission(owner, finalized_at=fin)
-        owners.append((owner, submission))
         for task_id in task_ids:
             job_id = _insert_generation_job(submission, dataset_id, task_id, status="succeeded")
             with connect() as db:
@@ -1194,25 +1195,74 @@ def test_start_peer_review_draws_reviewers_per_task(monkeypatch) -> None:
     rounds.start_peer_review(round_id)
 
     with connect() as db:
-        participants = [dict(r) for r in db.execute(
-            "select rp.user_id, rp.submission_id, u.name as user_name "
-            "from round_participants rp join users u on u.id = rp.user_id where rp.round_id = ?",
-            (round_id,)).fetchall()]
-        assignment_rows = db.execute(
+        rows = db.execute(
             """
             select j.task_id, s.owner_id as target_owner_id, j.reviewer_user_id
             from jobs j join submissions s on s.id = j.generator_submission_id
             where j.round_id = ? and j.job_type = 'peer_evaluation'
             """,
-            (round_id,)).fetchall()
+            (round_id,),
+        ).fetchall()
 
-    actual: dict[tuple[str, str], set[str]] = {}
-    for row in assignment_rows:
-        actual.setdefault((row["target_owner_id"], row["task_id"]), set()).add(row["reviewer_user_id"])
-    assert actual, "no peer evaluations created"
-    for (owner_id, task_id), reviewer_set in actual.items():
-        expected = {
-            p["user_id"]
-            for p in rounds.select_peer_reviewers(f"{round_id}:{task_id}", participants, owner_id, 2)
-        }
-        assert reviewer_set == expected, f"assignment for {owner_id}/{task_id} not from the per-task ring"
+    by_target_task: dict[tuple[str, str], set[str]] = {}
+    workload: Counter[str] = Counter()
+    for row in rows:
+        by_target_task.setdefault((row["target_owner_id"], row["task_id"]), set()).add(row["reviewer_user_id"])
+        workload[row["reviewer_user_id"]] += 1
+    assert by_target_task, "no peer evaluations created"
+
+    # exactly cap reviewers per artifact, never the owner, balanced workload
+    assert {len(reviewers) for reviewers in by_target_task.values()} == {2}
+    for (owner_id, _task_id), reviewers in by_target_task.items():
+        assert owner_id not in reviewers
+    assert set(workload.values()) == {4}  # 2 tasks x cap 2
+
+    # the two tasks are drawn independently: not every target sees the same pair
+    per_owner = {}
+    for (owner_id, task_id), reviewers in by_target_task.items():
+        per_owner.setdefault(owner_id, {})[task_id] = frozenset(reviewers)
+    differing = [o for o, tasks in per_owner.items() if len(set(tasks.values())) > 1]
+    assert differing, "reviewer sets identical on both tasks for every target"
+
+
+def test_next_round_avoids_previous_round_reviewer_pairs(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "peer_reviewers_per_artifact", 2)
+    fin = "2026-06-01T00:30:00+00:00"
+    dataset_id, task_ids = _insert_dataset(task_count=2)
+    # Roster sized like production (12 participants -> 132 possible reviewer->target
+    # pairs): a repeat-free second round exists. Tiny rosters can make zero-overlap
+    # impossible; that fallback is covered in test_reviewer_selection.py.
+    for _ in range(12):
+        owner = _insert_user()
+        submission = _insert_submission(owner, finalized_at=fin)
+        for task_id in task_ids:
+            job_id = _insert_generation_job(submission, dataset_id, task_id, status="succeeded")
+            with connect() as db:
+                db.execute(
+                    "update jobs set preview_s3_key = ?, completed_at = ?, updated_at = ? where id = ?",
+                    (f"jobs/{job_id}/generation/preview/index.html", now_iso(), now_iso(), job_id),
+                )
+
+    def run_round(name: str, start: str, end: str) -> str:
+        round_id = rounds.open_round(name, starts_at=start, ends_at=end)["id"]
+        rounds.close_round(round_id)
+        rounds.start_peer_review(round_id)
+        return round_id
+
+    first = run_round("R1", "2026-06-01T00:00:00+00:00", "2026-06-01T01:00:00+00:00")
+    second = run_round("R2", "2026-06-01T01:00:00+00:00", "2026-06-01T02:00:00+00:00")
+
+    def pairs(round_id: str) -> set[tuple[str, str]]:
+        with connect() as db:
+            return {
+                (row["reviewer_user_id"], row["target_owner_id"])
+                for row in db.execute(
+                    "select j.reviewer_user_id, s.owner_id as target_owner_id from jobs j "
+                    "join submissions s on s.id = j.generator_submission_id "
+                    "where j.round_id = ? and j.job_type = 'peer_evaluation'",
+                    (round_id,),
+                ).fetchall()
+            }
+
+    repeats = pairs(first) & pairs(second)
+    assert not repeats, f"reviewer->target pairs repeated across consecutive rounds: {repeats}"

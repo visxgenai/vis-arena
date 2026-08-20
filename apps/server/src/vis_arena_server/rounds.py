@@ -40,6 +40,104 @@ def select_peer_reviewers(
     return [roster[(position + offset) % n] for offset in range(1, k + 1)]
 
 
+def select_task_assignment(
+    round_id: str,
+    task_id: str,
+    participants: list[dict[str, Any]],
+    cap: int,
+    forbidden_pairs: set[tuple[str, str]],
+    max_attempts: int = 200,
+) -> dict[str, list[dict[str, Any]]]:
+    """Balanced reviewer assignment for one task that avoids repeating last
+    round's reviewer->target pairs.
+
+    Capacity-respecting greedy over deterministic shuffles (seed
+    "{round}:{task}", then ":{attempt}"): each participant reviews at most cap
+    artifacts, so a completed pass gives everyone exactly cap — balanced, no
+    self-review, and free of the forbidden (reviewer_id, target_owner_id)
+    pairs. Falls back to a balanced assignment ignoring the avoid-set only when
+    the roster is too small for any repeat-free one to exist. Deterministic
+    within a round, so previews match what start_peer_review creates.
+    """
+    base = sorted((dict(p) for p in participants), key=lambda p: p["user_id"])
+    n = len(base)
+    k = (n - 1) if cap <= 0 else min(cap, n - 1)
+    if k <= 0:
+        return {p["user_id"]: [] for p in base}
+
+    def attempt_assignment(rng: random.Random, avoid: set[tuple[str, str]]) -> dict[str, list[dict[str, Any]]] | None:
+        """One capacity-respecting greedy pass. Every participant may review at
+        most k artifacts (total slots == total capacity), so a pass that
+        completes gives each reviewer exactly k — the same balance the ring gave,
+        but able to honour the avoid-set. Returns None if it paints itself into
+        a corner; the caller retries with a different shuffle."""
+        owners = list(base)
+        rng.shuffle(owners)
+        remaining = {p["user_id"]: k for p in base}
+        assignment: dict[str, list[dict[str, Any]]] = {}
+        for owner in owners:
+            owner_id = owner["user_id"]
+            candidates = [
+                p for p in base
+                if p["user_id"] != owner_id
+                and remaining[p["user_id"]] > 0
+                and (p["user_id"], owner_id) not in avoid
+            ]
+            if len(candidates) < k:
+                return None
+            rng.shuffle(candidates)  # break ties randomly, then prefer most spare capacity
+            candidates.sort(key=lambda p: -remaining[p["user_id"]])
+            chosen = candidates[:k]
+            for reviewer in chosen:
+                remaining[reviewer["user_id"]] -= 1
+            assignment[owner_id] = chosen
+        return assignment
+
+    for attempt in range(max_attempts):
+        seed = f"{round_id}:{task_id}" if attempt == 0 else f"{round_id}:{task_id}:{attempt}"
+        assignment = attempt_assignment(random.Random(seed), forbidden_pairs)
+        if assignment is not None:
+            return assignment
+    # No repeat-free assignment exists (tiny roster): fall back to a balanced one.
+    for attempt in range(max_attempts):
+        seed = f"{round_id}:{task_id}:fallback:{attempt}"
+        assignment = attempt_assignment(random.Random(seed), set())
+        if assignment is not None:
+            return assignment
+    return {}
+
+
+def _previous_round_pairs(db, round_id: str) -> set[tuple[str, str]]:
+    """All (reviewer, target-owner) pairs assigned in the most recent other
+    round that had peer evaluations — failed assignments included, since the
+    goal is rotating who judges whom, not only who succeeded."""
+    row = db.execute(
+        """
+        select rr.id from review_rounds rr
+        where rr.id != ?
+          and exists (select 1 from evaluations e where e.round_id = rr.id and e.evaluator_type = 'peer')
+        order by coalesce(rr.ends_at, rr.created_at) desc
+        limit 1
+        """,
+        (round_id,),
+    ).fetchone()
+    if row is None:
+        return set()
+    return {
+        (pair["evaluator_user_id"], pair["target_owner_id"])
+        for pair in db.execute(
+            """
+            select e.evaluator_user_id, s.owner_id as target_owner_id
+            from evaluations e
+            join jobs aj on aj.id = e.artifact_job_id
+            join submissions s on s.id = aj.submission_id
+            where e.round_id = ? and e.evaluator_type = 'peer'
+            """,
+            (row["id"],),
+        ).fetchall()
+    }
+
+
 def open_round(
     name: str,
     starts_at: str | None = None,
@@ -226,10 +324,14 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
         # works at all, and reviewers shape other people's scores.
         artifact_owner_ids = {artifact["target_owner_id"] for artifact in artifacts}
         reviewer_roster = [dict(p) for p in participants if p["user_id"] in artifact_owner_ids]
+        previous_pairs = _previous_round_pairs(db, round_id)
+        assignment_by_task: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for artifact in artifacts:
-            for participant in select_peer_reviewers(
-                f"{round_id}:{artifact['task_id']}", reviewer_roster, artifact["target_owner_id"], cap
-            ):
+            if artifact["task_id"] not in assignment_by_task:
+                assignment_by_task[artifact["task_id"]] = select_task_assignment(
+                    round_id, artifact["task_id"], reviewer_roster, cap, previous_pairs
+                )
+            for participant in assignment_by_task[artifact["task_id"]].get(artifact["target_owner_id"], []):
                 if carry_forward_peer_evaluation(
                     db,
                     artifact_job=dict(artifact),

@@ -82,3 +82,37 @@ def test_per_task_seed_produces_independent_rings():
     for assignments in (assignments_a, assignments_b):
         load = Counter(r for reviewers in assignments.values() for r in reviewers)
         assert set(load.values()) == {2}
+
+
+def test_task_assignment_avoids_forbidden_pairs():
+    from vis_arena_server.rounds import select_task_assignment
+
+    # forbid exactly the pairs the first-attempt shuffle would produce, forcing
+    # the deterministic retry to find a later shuffle with zero repeats
+    first_attempt = {
+        p["user_id"]: set(reviewers_for("round-x:task-a", p["user_id"])) for p in PARTICIPANTS
+    }
+    forbidden = {(reviewer, owner) for owner, reviewers in first_attempt.items() for reviewer in reviewers}
+
+    assignment = select_task_assignment("round-x", "task-a", PARTICIPANTS, 2, forbidden)
+
+    pairs = {(p["user_id"], owner) for owner, reviewers in assignment.items() for p in reviewers}
+    assert not (pairs & forbidden), "assignment repeated a forbidden reviewer->target pair"
+    # balance survives: every owner gets cap reviewers, workload equal, no self-review
+    load = Counter(p["user_id"] for reviewers in assignment.values() for p in reviewers)
+    assert set(load.values()) == {2}
+    for owner, reviewers in assignment.items():
+        assert len(reviewers) == 2
+        assert owner not in {p["user_id"] for p in reviewers}
+
+
+def test_task_assignment_falls_back_to_minimal_overlap():
+    from vis_arena_server.rounds import select_task_assignment
+
+    # 2 participants, cap 1: the only possible assignment is mutual review, so a
+    # forbidden mutual pair cannot be avoided — must still return an assignment.
+    two = PARTICIPANTS[:2]
+    forbidden = {("user-0", "user-1"), ("user-1", "user-0")}
+    assignment = select_task_assignment("round-y", "task-a", two, 1, forbidden)
+    assert {owner for owner in assignment} == {"user-0", "user-1"}
+    assert all(len(reviewers) == 1 for reviewers in assignment.values())
