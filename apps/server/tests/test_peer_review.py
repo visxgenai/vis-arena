@@ -1169,3 +1169,50 @@ def test_peer_review_reuses_completed_score_cells_for_unchanged_submissions() ->
         (yx_submission, alice_submission),
         (yx_submission, bob_submission),
     }
+
+
+def test_start_peer_review_draws_reviewers_per_task(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "peer_reviewers_per_artifact", 2)
+    fin = "2026-06-01T00:30:00+00:00"
+    dataset_id, task_ids = _insert_dataset(task_count=2)
+    owners = []
+    for _ in range(5):
+        owner = _insert_user()
+        submission = _insert_submission(owner, finalized_at=fin)
+        owners.append((owner, submission))
+        for task_id in task_ids:
+            job_id = _insert_generation_job(submission, dataset_id, task_id, status="succeeded")
+            with connect() as db:
+                db.execute(
+                    "update jobs set preview_s3_key = ?, completed_at = ?, updated_at = ? where id = ?",
+                    (f"jobs/{job_id}/generation/preview/index.html", now_iso(), now_iso(), job_id),
+                )
+    round_id = rounds.open_round(
+        "Per-Task Round", starts_at="2026-06-01T00:00:00+00:00", ends_at="2026-06-01T01:00:00+00:00"
+    )["id"]
+    rounds.close_round(round_id)
+    rounds.start_peer_review(round_id)
+
+    with connect() as db:
+        participants = [dict(r) for r in db.execute(
+            "select rp.user_id, rp.submission_id, u.name as user_name "
+            "from round_participants rp join users u on u.id = rp.user_id where rp.round_id = ?",
+            (round_id,)).fetchall()]
+        assignment_rows = db.execute(
+            """
+            select j.task_id, s.owner_id as target_owner_id, j.reviewer_user_id
+            from jobs j join submissions s on s.id = j.generator_submission_id
+            where j.round_id = ? and j.job_type = 'peer_evaluation'
+            """,
+            (round_id,)).fetchall()
+
+    actual: dict[tuple[str, str], set[str]] = {}
+    for row in assignment_rows:
+        actual.setdefault((row["target_owner_id"], row["task_id"]), set()).add(row["reviewer_user_id"])
+    assert actual, "no peer evaluations created"
+    for (owner_id, task_id), reviewer_set in actual.items():
+        expected = {
+            p["user_id"]
+            for p in rounds.select_peer_reviewers(f"{round_id}:{task_id}", participants, owner_id, 2)
+        }
+        assert reviewer_set == expected, f"assignment for {owner_id}/{task_id} not from the per-task ring"

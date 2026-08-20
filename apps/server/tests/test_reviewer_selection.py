@@ -69,3 +69,16 @@ def test_single_participant_no_peers():
 
 def test_unknown_owner_gets_nothing():
     assert select_peer_reviewers("round-a", PARTICIPANTS, "stranger", 2) == []
+
+
+def test_per_task_seed_produces_independent_rings():
+    # Change A: the same round with different task seeds must shuffle independently,
+    # so a harsh reviewer is not dealt both artifacts of the same participant by
+    # construction. Deterministic given fixed seed strings.
+    assignments_a = {p["user_id"]: reviewers_for("round-x:task-a", p["user_id"]) for p in PARTICIPANTS}
+    assignments_b = {p["user_id"]: reviewers_for("round-x:task-b", p["user_id"]) for p in PARTICIPANTS}
+    assert assignments_a != assignments_b
+    # both rings keep every balance property
+    for assignments in (assignments_a, assignments_b):
+        load = Counter(r for reviewers in assignments.values() for r in reviewers)
+        assert set(load.values()) == {2}

@@ -15,21 +15,22 @@ EVALUATION_JOB_TYPES = {"peer_review", "peer_evaluation", "central_evaluation"}
 
 
 def select_peer_reviewers(
-    round_id: str, participants: list[dict[str, Any]], owner_id: str, cap: int
+    seed_key: str, participants: list[dict[str, Any]], owner_id: str, cap: int
 ) -> list[dict[str, Any]]:
-    """Pick which participants review one owner's artifacts this round.
+    """Pick which participants review one owner's artifact.
 
-    Ring assignment over a per-round shuffled roster: the owner's next `cap`
-    neighbours review them. Guarantees exactly min(cap, N-1) reviewers per
-    artifact, an equal review workload for every participant, and no
-    self-review. The shuffle is seeded with the round id, so the pairing is
-    deterministic within a round (safe to re-run) but rotates across rounds —
-    no target is permanently stuck with the same judges. cap <= 0 means
-    everyone reviews everyone (the pre-subsampling behaviour).
+    Ring assignment over a shuffled roster: the owner's next `cap` neighbours
+    review them. Guarantees exactly min(cap, N-1) reviewers per artifact, an
+    equal review workload for every participant, and no self-review. The
+    shuffle is seeded with `seed_key` — "{round_id}:{task_id}", so each task
+    gets an INDEPENDENT draw (a harsh reviewer is not dealt both of a
+    participant's artifacts by construction) while staying deterministic
+    within a round (safe to re-run) and rotating across rounds. cap <= 0
+    means everyone reviews everyone (the pre-subsampling behaviour).
     """
     roster = [dict(p) for p in participants]
     roster.sort(key=lambda p: p["user_id"])  # stable pre-shuffle order regardless of SQL row order
-    rng = random.Random(round_id)
+    rng = random.Random(seed_key)
     rng.shuffle(roster)
     n = len(roster)
     k = (n - 1) if cap <= 0 else min(cap, n - 1)
@@ -227,7 +228,7 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
         reviewer_roster = [dict(p) for p in participants if p["user_id"] in artifact_owner_ids]
         for artifact in artifacts:
             for participant in select_peer_reviewers(
-                round_id, reviewer_roster, artifact["target_owner_id"], cap
+                f"{round_id}:{artifact['task_id']}", reviewer_roster, artifact["target_owner_id"], cap
             ):
                 if carry_forward_peer_evaluation(
                     db,
