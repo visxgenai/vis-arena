@@ -88,3 +88,49 @@ def test_report_never_leaks_answers():
     dumped = _json.dumps(graded).lower()
     assert "acme corp" not in dumped.replace("totally wrong", "")  # key answer absent
     assert "top company" not in dumped                              # question text absent
+
+
+# ---------------------------------------------------------------------------
+# Judge bundle payload: questions only, whitelisted config, no private metadata
+# ---------------------------------------------------------------------------
+
+FULL_KEY = {
+    "combine": "sum",
+    "qa_weight": 0.5,
+    "model": "sonnet",
+    "require_rendered_charts": False,
+    "_dataset": "vast-2024-mc1 mc1.json",
+    "_dataset_sha256": "355b6515a5246b8192382dc8b07efe3e6a94f0308aea5af5ff54440fff79d886",
+    "_verified": "2026-08-05 margins: q1 +18%, q5 engineered (20 vs <=10)",
+    "questions": [
+        {"id": "q1", "type": "text", "question": "top company?", "answer": "Acme Corp", "accept": ["acme"]},
+        {"id": "q5", "type": "number", "question": "how many?", "answer": "20", "accept": []},
+    ],
+}
+
+
+def test_public_questions_payload_strips_answers_and_private_metadata():
+    payload = jg.public_questions_payload(FULL_KEY)
+    dumped = _json_dumps(payload)
+    # no answers, no accept lists, no private underscore metadata (the _verified
+    # margin note leaked the q5 answer "20" into judge bundles before this existed)
+    assert "acme" not in dumped.lower()
+    assert "20 vs" not in dumped
+    assert not [k for k in payload if k.startswith("_")]
+    assert all(set(q) == {"id", "type", "question"} for q in payload["questions"])
+    # scoring config the judge legitimately needs survives
+    assert payload["combine"] == "sum"
+    assert payload["model"] == "sonnet"
+    assert [q["id"] for q in payload["questions"]] == ["q1", "q5"]
+
+
+def test_public_questions_payload_rejects_unknown_config_keys():
+    payload = jg.public_questions_payload({**FULL_KEY, "secret_hint": "the answer is 20"})
+    assert "secret_hint" not in payload
+    assert "20" not in _json_dumps(payload)
+
+
+def _json_dumps(value) -> str:
+    import json as _j
+
+    return _j.dumps(value)

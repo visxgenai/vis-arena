@@ -73,6 +73,26 @@ def _charts_rendered(render_stats: dict[str, Any] | None) -> bool | None:
     return (drawn + painted) > 0
 
 
+# Config the judge container legitimately needs; everything else in a key file
+# (answers, accept lists, dataset hashes, verification notes) stays server-side.
+# Whitelist, never blacklist: the "_verified" margin note used to reach bundles
+# and it spelled out an engineered answer value.
+PUBLIC_KEY_FIELDS = ("combine", "qa_weight", "model", "require_rendered_charts")
+PUBLIC_QUESTION_FIELDS = ("id", "type", "question")
+
+
+def public_questions_payload(key: dict[str, Any]) -> dict[str, Any]:
+    """The questions.json that ships inside a judge bundle: questions without
+    answers, plus whitelisted scoring config. Build judge bundles from this —
+    never from the raw key file."""
+    payload = {field: key[field] for field in PUBLIC_KEY_FIELDS if field in key}
+    payload["questions"] = [
+        {field: question[field] for field in PUBLIC_QUESTION_FIELDS if field in question}
+        for question in key.get("questions", [])
+    ]
+    return payload
+
+
 @lru_cache(maxsize=32)
 def _load_key(task_id: str) -> dict[str, Any]:
     from .storage import read_s3_file  # late import: storage pulls boto3/settings
