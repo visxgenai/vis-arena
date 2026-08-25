@@ -134,3 +134,42 @@ def _json_dumps(value) -> str:
     import json as _j
 
     return _j.dumps(value)
+
+
+# ---------------------------------------------------------------------------
+# Bundle gate: validate the artifact that ships, independent of how it was built
+# ---------------------------------------------------------------------------
+
+def test_bundle_gate_accepts_a_whitelisted_payload():
+    assert jg.bundle_violations(jg.public_questions_payload(FULL_KEY), FULL_KEY) == []
+
+
+def test_bundle_gate_catches_private_metadata_and_answers():
+    sloppy = {k: v for k, v in FULL_KEY.items() if k != "questions"}
+    sloppy["questions"] = [{"id": q["id"], "type": q["type"], "question": q["question"]} for q in FULL_KEY["questions"]]
+    violations = jg.bundle_violations(sloppy, FULL_KEY)
+    assert any("_verified" in v for v in violations), violations
+    assert any("_dataset_sha256" in v for v in violations), violations
+
+    with_answer = jg.public_questions_payload(FULL_KEY)
+    with_answer["questions"][0]["answer"] = "Acme Corp"
+    assert any("answer" in v for v in jg.bundle_violations(with_answer, FULL_KEY))
+
+
+def test_bundle_gate_catches_an_answer_hidden_in_its_own_question_text():
+    # authoring hazard the whitelist cannot catch: the question gives itself away
+    key = {
+        "combine": "sum",
+        "questions": [{"id": "q1", "type": "number", "question": "Acme shipped 20 loads — how many?", "answer": "20"}],
+    }
+    violations = jg.bundle_violations(jg.public_questions_payload(key), key)
+    assert any("q1" in v and "own answer" in v for v in violations), violations
+
+
+def test_bundle_gate_tolerates_incidental_number_matches():
+    # "2024" in question text is not a leak of the answer "20"
+    key = {
+        "combine": "sum",
+        "questions": [{"id": "q1", "type": "number", "question": "In 2024, how many loads?", "answer": "20"}],
+    }
+    assert jg.bundle_violations(jg.public_questions_payload(key), key) == []

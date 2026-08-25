@@ -93,6 +93,48 @@ def public_questions_payload(key: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def bundle_violations(payload: dict[str, Any], key: dict[str, Any]) -> list[str]:
+    """Validate the questions.json that is ABOUT TO SHIP against the private key.
+
+    Checks the artifact, not the code that produced it, so a future script that
+    forgets `public_questions_payload` is still caught. Three classes:
+      1. unexpected top-level or per-question fields (private metadata riding along),
+      2. any answer/accept value present anywhere in the payload,
+      3. a question whose own text contains its answer (authoring hazard the
+         whitelist cannot catch).
+    Returns human-readable violations; empty list means safe to ship.
+    """
+    violations: list[str] = []
+
+    for field in payload:
+        if field not in (*PUBLIC_KEY_FIELDS, "questions"):
+            violations.append(f"unexpected top-level field in bundle: {field!r}")
+    for question in payload.get("questions", []):
+        extra = set(question) - set(PUBLIC_QUESTION_FIELDS)
+        if extra:
+            violations.append(f"unexpected field(s) on question {question.get('id')!r}: {sorted(extra)}")
+
+    blob = json.dumps(payload).lower()
+    for question in key.get("questions", []):
+        for secret in (question.get("answer"), *question.get("accept", [])):
+            text = str(secret or "").strip().lower()
+            # Only flag distinctive values; a bare number is checked per-question below.
+            if len(text) >= 4 and not text.isdigit() and text in blob:
+                violations.append(f"answer value for {question.get('id')!r} appears in the bundle")
+
+    for question in key.get("questions", []):
+        answer = str(question.get("answer") or "").strip().lower()
+        shipped = next((q for q in payload.get("questions", []) if q.get("id") == question.get("id")), None)
+        if not answer or shipped is None:
+            continue
+        question_text = str(shipped.get("question") or "").lower()
+        pattern = rf"(?<![\w.]){re.escape(answer)}(?![\w.])"
+        if re.search(pattern, question_text):
+            violations.append(f"question {question.get('id')!r} contains its own answer")
+
+    return violations
+
+
 @lru_cache(maxsize=32)
 def _load_key(task_id: str) -> dict[str, Any]:
     from .storage import read_s3_file  # late import: storage pulls boto3/settings
