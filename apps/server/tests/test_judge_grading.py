@@ -173,3 +173,25 @@ def test_bundle_gate_tolerates_incidental_number_matches():
         "questions": [{"id": "q1", "type": "number", "question": "In 2024, how many loads?", "answer": "20"}],
     }
     assert jg.bundle_violations(jg.public_questions_payload(key), key) == []
+
+
+def test_bundle_gate_does_not_flag_choice_questions_listing_their_answer():
+    # A multiple-choice question MUST contain its answer among the options —
+    # flagging that would make the gate cry wolf until someone switches it off.
+    key = {
+        "combine": "sum",
+        "questions": [{
+            "id": "q5", "type": "choice", "answer": "Harrell-Walters",
+            "question": "Which of Harrell-Walters, Wilcox-Nelson, or Clarke and Sloan did the most?",
+        }],
+    }
+    assert jg.bundle_violations(jg.public_questions_payload(key), key) == []
+
+
+def test_bundle_gate_still_flags_non_choice_self_disclosure():
+    key = {
+        "combine": "sum",
+        "questions": [{"id": "q1", "type": "text", "answer": "Harrell-Walters",
+                       "question": "Harrell-Walters led the year — who led it?"}],
+    }
+    assert jg.bundle_violations(jg.public_questions_payload(key), key)

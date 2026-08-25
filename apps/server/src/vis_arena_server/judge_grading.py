@@ -114,15 +114,19 @@ def bundle_violations(payload: dict[str, Any], key: dict[str, Any]) -> list[str]
         if extra:
             violations.append(f"unexpected field(s) on question {question.get('id')!r}: {sorted(extra)}")
 
+    # A multiple-choice question necessarily lists its answer among the options,
+    # so answer-presence checks apply only to free-answer types.
+    free_answer = [q for q in key.get("questions", []) if q.get("type") != "choice"]
+
     blob = json.dumps(payload).lower()
-    for question in key.get("questions", []):
+    for question in free_answer:
         for secret in (question.get("answer"), *question.get("accept", [])):
             text = str(secret or "").strip().lower()
             # Only flag distinctive values; a bare number is checked per-question below.
             if len(text) >= 4 and not text.isdigit() and text in blob:
                 violations.append(f"answer value for {question.get('id')!r} appears in the bundle")
 
-    for question in key.get("questions", []):
+    for question in free_answer:
         answer = str(question.get("answer") or "").strip().lower()
         shipped = next((q for q in payload.get("questions", []) if q.get("id") == question.get("id")), None)
         if not answer or shipped is None:
