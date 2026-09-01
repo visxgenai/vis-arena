@@ -74,6 +74,14 @@ class Settings:
     evaluator_network: str = os.environ.get("VIS_ARENA_EVALUATOR_NETWORK", "bridge")
     evaluator_timeout_seconds: int = int(os.environ.get("VIS_ARENA_EVALUATOR_TIMEOUT_SECONDS", "1800"))
     # Peer reviewers per artifact in a round (0 = every participant reviews every artifact).
+    # Deadline switch: "true" refuses new submissions with a clear message.
+    # Reading (history, scores, reviews) stays open.
+    submissions_closed: bool = os.environ.get("VIS_ARENA_SUBMISSIONS_CLOSED", "false").lower() == "true"
+    submissions_closed_message: str = os.environ.get(
+        "VIS_ARENA_SUBMISSIONS_CLOSED_MESSAGE",
+        "Submissions are closed: the challenge deadline has passed. "
+        "Your existing submissions, scores and peer reviews remain available.",
+    )
     peer_reviewers_per_artifact: int = int(os.environ.get("VIS_ARENA_PEER_REVIEWERS_PER_ARTIFACT", "2"))
     executor_mode: str = os.environ.get("VIS_ARENA_EXECUTOR_MODE", "local_docker")
     aws_batch_region: str = os.environ.get("VIS_ARENA_AWS_BATCH_REGION", os.environ.get("AWS_REGION", s3_region))

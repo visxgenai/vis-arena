@@ -146,13 +146,20 @@ def download_dataset(dataset_id: str, user: dict = Depends(current_user)) -> dic
     return presigned_get(dataset["s3_key"])
 
 
+def _require_submissions_open() -> None:
+    if settings.submissions_closed:
+        raise HTTPException(status_code=403, detail=settings.submissions_closed_message)
+
+
 @app.post("/v1/submissions/uploads")
 def create_submission_presigned_upload(payload: dict, user: dict = Depends(current_user)) -> dict:
+    _require_submissions_open()
     return create_submission_upload(user["id"], payload["name"])
 
 
 @app.post("/v1/submissions/{submission_id}/finalize")
 def finalize_submission_upload(submission_id: str, payload: dict | None = None, user: dict = Depends(current_user)) -> dict:
+    _require_submissions_open()
     payload = payload or {}
     return finalize_submission(submission_id, user["id"], payload.get("dataset_id"))
 
