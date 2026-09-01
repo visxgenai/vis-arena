@@ -107,6 +107,82 @@ def select_task_assignment(
     return {}
 
 
+def select_round_assignment(
+    round_id: str,
+    artifacts: list[dict[str, Any]],
+    participants: list[dict[str, Any]],
+    cap: int,
+    forbidden_pairs: set[tuple[str, str]],
+    max_attempts: int = 400,
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """Assign reviewers for the WHOLE round at once, keyed by (owner, task).
+
+    Assigning per task independently lets the same agent be drawn for both of a
+    participant's artifacts (~58% chance at 3-of-13, twice). Assigning jointly
+    guarantees the property that matters: every one of a participant's reviews
+    comes from a DIFFERENT agent. Still balanced (equal workload), no
+    self-review, and free of the previous round's reviewer->target pairs.
+    """
+    base = sorted((dict(p) for p in participants), key=lambda p: p["user_id"])
+    tasks_by_owner: dict[str, list[str]] = {}
+    for artifact in artifacts:
+        tasks_by_owner.setdefault(artifact["target_owner_id"], []).append(artifact["task_id"])
+    for owner_id in tasks_by_owner:
+        tasks_by_owner[owner_id].sort()
+    if not base or cap <= 0:
+        return {}
+
+    # Never demand more distinct reviewers than the roster can supply (tiny rounds
+    # degrade to as many distinct reviewers as exist, rather than failing).
+    def needed_for(tasks: list[str]) -> int:
+        return min(len(tasks) * cap, len(base) - 1)
+
+    total_slots = sum(needed_for(tasks) for tasks in tasks_by_owner.values())
+    per_reviewer = total_slots // len(base)
+
+    def attempt(rng: random.Random, avoid: set[tuple[str, str]]):
+        owners = sorted(tasks_by_owner)
+        rng.shuffle(owners)
+        remaining = {p["user_id"]: per_reviewer for p in base}
+        # a few reviewers absorb the remainder when slots don't divide evenly
+        for extra in rng.sample([p["user_id"] for p in base], total_slots - per_reviewer * len(base)):
+            remaining[extra] += 1
+        assignment: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for owner_id in owners:
+            needed = needed_for(tasks_by_owner[owner_id])
+            candidates = [
+                p for p in base
+                if p["user_id"] != owner_id
+                and remaining[p["user_id"]] > 0
+                and (p["user_id"], owner_id) not in avoid
+            ]
+            if len(candidates) < needed:
+                return None
+            rng.shuffle(candidates)
+            candidates.sort(key=lambda p: -remaining[p["user_id"]])
+            chosen = candidates[:needed]          # distinct people by construction
+            for reviewer in chosen:
+                remaining[reviewer["user_id"]] -= 1
+            rng.shuffle(chosen)
+            owner_tasks = tasks_by_owner[owner_id]
+            for index, task_id in enumerate(owner_tasks):
+                start = (needed * index) // len(owner_tasks)
+                end = (needed * (index + 1)) // len(owner_tasks)
+                assignment[(owner_id, task_id)] = chosen[start:end]
+        return assignment
+
+    for index in range(max_attempts):
+        seed = f"{round_id}:joint" if index == 0 else f"{round_id}:joint:{index}"
+        result = attempt(random.Random(seed), forbidden_pairs)
+        if result is not None:
+            return result
+    for index in range(max_attempts):   # roster too tight for the avoid-set
+        result = attempt(random.Random(f"{round_id}:joint:fallback:{index}"), set())
+        if result is not None:
+            return result
+    return {}
+
+
 def _previous_round_pairs(db, round_id: str) -> set[tuple[str, str]]:
     """All (reviewer, target-owner) pairs assigned in the most recent other
     round that had peer evaluations — failed assignments included, since the
@@ -325,13 +401,11 @@ def start_peer_review(round_id: str) -> dict[str, Any]:
         artifact_owner_ids = {artifact["target_owner_id"] for artifact in artifacts}
         reviewer_roster = [dict(p) for p in participants if p["user_id"] in artifact_owner_ids]
         previous_pairs = _previous_round_pairs(db, round_id)
-        assignment_by_task: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        assignment = select_round_assignment(
+            round_id, [dict(a) for a in artifacts], reviewer_roster, cap, previous_pairs
+        )
         for artifact in artifacts:
-            if artifact["task_id"] not in assignment_by_task:
-                assignment_by_task[artifact["task_id"]] = select_task_assignment(
-                    round_id, artifact["task_id"], reviewer_roster, cap, previous_pairs
-                )
-            for participant in assignment_by_task[artifact["task_id"]].get(artifact["target_owner_id"], []):
+            for participant in assignment.get((artifact["target_owner_id"], artifact["task_id"]), []):
                 if carry_forward_peer_evaluation(
                     db,
                     artifact_job=dict(artifact),

@@ -116,3 +116,47 @@ def test_task_assignment_falls_back_to_minimal_overlap():
     assignment = select_task_assignment("round-y", "task-a", two, 1, forbidden)
     assert {owner for owner in assignment} == {"user-0", "user-1"}
     assert all(len(reviewers) == 1 for reviewers in assignment.values())
+
+
+def test_round_assignment_gives_each_target_distinct_reviewers():
+    from vis_arena_server.rounds import select_round_assignment
+
+    artifacts = [
+        {"job_id": f"job-{p['user_id']}-{task}", "task_id": task, "target_owner_id": p["user_id"]}
+        for p in PARTICIPANTS for task in ("task-a", "task-b")
+    ]
+    assignment = select_round_assignment("round-z", artifacts, PARTICIPANTS, cap=2, forbidden_pairs=set())
+
+    by_target: dict[str, list[str]] = {}
+    workload = Counter()
+    for (owner_id, _task_id), reviewers in assignment.items():
+        assert len(reviewers) == 2
+        for reviewer in reviewers:
+            assert reviewer["user_id"] != owner_id            # no self-review
+            by_target.setdefault(owner_id, []).append(reviewer["user_id"])
+            workload[reviewer["user_id"]] += 1
+
+    for owner_id, reviewers in by_target.items():
+        # THE POINT: 2 tasks x cap 2 = 4 reviews, from 4 DIFFERENT agents
+        assert len(reviewers) == 4
+        assert len(set(reviewers)) == 4, f"{owner_id} was reviewed twice by the same agent"
+    assert set(workload.values()) == {4}   # balanced: everyone reviews 4 artifacts
+
+
+def test_round_assignment_still_avoids_previous_round_pairs():
+    from vis_arena_server.rounds import select_round_assignment
+
+    # Production-sized roster: each target needs 4 distinct reviewers out of 11,
+    # so a repeat-free second round exists. (On a 6-person roster it cannot —
+    # the previous round would have used almost every available pair.)
+    roster = [{"user_id": f"u-{i}", "submission_id": f"s-{i}", "user_name": f"p{i}"} for i in range(12)]
+    artifacts = [
+        {"job_id": f"job-{p['user_id']}-{task}", "task_id": task, "target_owner_id": p["user_id"]}
+        for p in roster for task in ("task-a", "task-b")
+    ]
+    first = select_round_assignment("round-p", artifacts, roster, cap=2, forbidden_pairs=set())
+    used = {(r["user_id"], owner) for (owner, _t), reviewers in first.items() for r in reviewers}
+
+    second = select_round_assignment("round-q", artifacts, roster, cap=2, forbidden_pairs=used)
+    repeats = {(r["user_id"], owner) for (owner, _t), reviewers in second.items() for r in reviewers} & used
+    assert not repeats, f"repeated pairs: {repeats}"
