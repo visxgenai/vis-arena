@@ -45,7 +45,10 @@ def resolve_model(value: Any) -> str:
 # per-job token budget. When remaining tokens run low (or at the generous call
 # backstop) the loop forces a final answer so a score is ALWAYS produced.
 MAX_MODEL_CALLS = 60
-MIN_REMAINING_TOKENS = 60_000
+# Reserve enough for the final call: by late in a run the conversation carries
+# several screenshots, so ONE more exchange can cost far more than a small
+# margin — a 60k reserve let runs die mid-call instead of wrapping up.
+MIN_REMAINING_TOKENS = 250_000
 
 # The judge scores two aspects from ONE exploration pass:
 #   1. QA — does the visualization surface correct answers to grounded questions?
