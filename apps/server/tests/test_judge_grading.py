@@ -195,3 +195,42 @@ def test_bundle_gate_still_flags_non_choice_self_disclosure():
                        "question": "Harrell-Walters led the year — who led it?"}],
     }
     assert jg.bundle_violations(jg.public_questions_payload(key), key)
+
+
+# ---------------------------------------------------------------------------
+# Module modes: rubric-only (validation on public tasks), qa-only, both
+# ---------------------------------------------------------------------------
+
+RUBRIC_ONLY_KEY = {"mode": "rubric", "model": "global.anthropic.claude-sonnet-5"}
+
+
+def test_rubric_only_mode_scores_out_of_100_without_questions(monkeypatch):
+    monkeypatch.setattr(jg, "_load_key", lambda task_id: RUBRIC_ONLY_KEY)
+    graded = jg.grade_central_result("public-task", {"rubric": RUBRIC, "screenshots_taken": 2})
+    assert graded["score"] == pytest.approx(80.0)
+    assert graded["max_score"] == 100
+    assert graded["metadata"]["qa_score"] is None
+    assert graded["metadata"]["rubric_score"] == pytest.approx(80.0)
+    assert graded["per_question"] == []
+    assert len(graded["criteria"]) == 5
+
+
+def test_rubric_only_mode_ignores_any_answers_the_judge_returns(monkeypatch):
+    monkeypatch.setattr(jg, "_load_key", lambda task_id: RUBRIC_ONLY_KEY)
+    graded = jg.grade_central_result(
+        "public-task", {"answers": [{"id": "q1", "answer": "whatever"}], "rubric": RUBRIC}
+    )
+    assert graded["max_score"] == 100
+    assert graded["metadata"]["qa_score"] is None
+
+
+def test_rubric_only_mode_fails_loudly_when_rubric_missing(monkeypatch):
+    monkeypatch.setattr(jg, "_load_key", lambda task_id: RUBRIC_ONLY_KEY)
+    graded = jg.grade_central_result("public-task", {"rubric": RUBRIC[:2]})
+    assert graded["score"] is None
+    assert "rubric" in graded["summary"].lower()
+
+
+def test_both_mode_remains_the_default(monkeypatch):
+    graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}]))
+    assert graded["max_score"] == 200

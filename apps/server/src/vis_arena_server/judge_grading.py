@@ -146,7 +146,7 @@ def _load_key(task_id: str) -> dict[str, Any]:
     key_path = f"{settings.central_judge_keys_s3_prefix.rstrip('/')}/{task_id}.json"
     body, _ = read_s3_file(key_path)
     data = json.loads(body.decode("utf-8"))
-    if not data.get("questions"):
+    if not data.get("questions") and str(data.get("mode", "both")) != "rubric":
         raise ValueError(f"answer key for {task_id} has no questions")
     return data
 
@@ -158,7 +158,11 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
     score, not the job); raises only if the key itself is unavailable/broken.
     """
     key = _load_key(task_id)
-    questions = key["questions"]
+    # Modules can run independently: "rubric" scores presentation only (usable on
+    # public tasks with no answer key, e.g. validating the judge against peer
+    # scores), "qa" scores answers only, "both" is the finals default.
+    mode = str(key.get("mode", "both")).lower()
+    questions = key.get("questions") or []
     combine = str(key.get("combine", "sum"))
     qa_weight = float(key.get("qa_weight", 0.5))
     # Visual-evidence judgment belongs to the (vision-equipped) judge agent, not a
@@ -167,15 +171,19 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
     # an explicit opt-in only.
     require_rendered = bool(key.get("require_rendered_charts", False))
 
-    answers_list = raw_report.get("answers") or []
-    answers = {str(a.get("id")): a.get("answer") for a in answers_list if isinstance(a, dict)}
-    per_question = [{"id": q["id"], "correct": is_correct(q, answers.get(q["id"]))} for q in questions]
-    correct = sum(1 for r in per_question if r["correct"])
-    qa = round(100.0 * correct / len(questions), 1) if questions else 0.0
+    scores_qa = mode in ("both", "qa")
+    per_question: list[dict[str, Any]] = []
+    qa: float | None = None
+    if scores_qa:
+        answers_list = raw_report.get("answers") or []
+        answers = {str(a.get("id")): a.get("answer") for a in answers_list if isinstance(a, dict)}
+        per_question = [{"id": q["id"], "correct": is_correct(q, answers.get(q["id"]))} for q in questions]
+        correct = sum(1 for r in per_question if r["correct"])
+        qa = round(100.0 * correct / len(questions), 1) if questions else 0.0
 
     notes: list[str] = []
     charts = _charts_rendered(raw_report.get("render_stats"))
-    if require_rendered and charts is False:
+    if require_rendered and charts is False and scores_qa:
         qa = 0.0
         notes.append("QA gated to 0: no rendered visualizations (0 drawn svg / 0 painted canvas) — answers were prose-only by definition")
     if charts is False:
@@ -188,7 +196,18 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
     rubric = raw_report.get("rubric") or []
     rscore = rubric_score(rubric)
     max_score = 100
-    if rscore is None:
+    if mode == "rubric":
+        combined = rscore
+        blend = "rubric only"
+        if rscore is None:
+            notes.append("rubric incomplete or invalid — no score produced")
+    elif not scores_qa:
+        combined = rscore
+        blend = "rubric only"
+    elif mode == "qa":
+        combined = qa
+        blend = "QA only"
+    elif rscore is None:
         combined = qa
         blend = "QA only — rubric incomplete"
         notes.append("rubric incomplete — combined score is QA-only (/100)")
@@ -221,6 +240,7 @@ def grade_central_result(task_id: str, raw_report: dict[str, Any]) -> dict[str, 
             "judge": "qa-judge",
             "graded": "server-side",
             "qa_score": qa,
+            "mode": mode,
             "rubric_score": rscore,
             "combine": combine,
             "charts_rendered": charts,

@@ -52,6 +52,34 @@ MIN_REMAINING_TOKENS = 60_000
 #   2. Rubric — the arena's five public criteria (storytelling quality).
 RUBRIC_IDS = ("data_fidelity", "insightfulness", "narrative_coherence", "visual_craft", "functionality")
 
+RUBRIC_ONLY_PROMPT = """You are a careful, impartial visualization judge. You will
+be given an interactive data-visualization page. Judge ONLY its quality — there
+are no questions to answer in this run.
+
+FIRST take a screenshot and LOOK at the page; explore and interact (click,
+filter, hover) and screenshot again after every meaningful interaction. Rate
+each criterion 1-5 from what you SEE, not from page text alone:
+- data_fidelity: displayed values/totals/trends internally consistent and
+  plausible for the task. 1 fabricated/contradictory - 5 fully faithful.
+- insightfulness: goes beyond plotting to trends, exceptions, implications.
+  1 raw chart - 5 rich and decision-pointing.
+- narrative_coherence: story arc (hook - build - payoff), consistent encodings.
+  1 no story - 5 tight arc, every panel reinforces the payoff.
+- visual_craft: chart choice, encodings, axes, labels, legibility, disclosure
+  of filters/scope. 1 misrepresents/illegible - 5 optimal and accessible.
+- functionality: interactive controls you ACTUALLY exercised work. 1 broken -
+  5 all work and meaningfully aid analysis.
+
+The RENDER STATS accompanying each screenshot (which svg/canvas elements drew)
+are context, not a verdict — some legitimate charts are plain HTML/CSS. Use the
+screenshot tool as your eyes and the playwright tool (PYTHON,
+playwright.sync_api; page URL in VIS_ARENA_ARTIFACT_URL) for interactions —
+never page.content(). Do NOT read page source or embedded raw data.
+
+When done, call finish with the five rubric ratings, each with one-line
+evidence, and an empty answers list."""
+
+
 JUDGE_PROMPT = """You are a careful, impartial visualization judge. You will be
 given an interactive data-visualization page and a list of factual questions.
 
@@ -97,7 +125,8 @@ or a year — no sentences) AND the five rubric ratings with one-line evidence."
 
 def load_questions(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    questions = data["questions"]
+    # A rubric-only bundle ships an empty question list on purpose.
+    questions = data.get("questions") or []
     for q in questions:
         for field in ("id", "type", "question"):  # cloud bundles are STRIPPED: no answers ride along
             if field not in q:
@@ -291,11 +320,20 @@ def _collect_judgment(
 
     client = make_llm_client("evaluation")
     model = model or DEFAULT_MODEL
-    question_lines = "\n".join(f"- {q['id']}: {q['question']}" for q in questions)
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": JUDGE_PROMPT},
-        {"role": "user", "content": f"ARTIFACT_URL={artifact_url}\n\nQuestions:\n{question_lines}"},
-    ]
+    # No questions => rubric-only run: a different prompt, so the quality judgment
+    # is made the same way whether or not a QA pass exists (keeps validation runs
+    # comparable with finals runs).
+    if questions:
+        question_lines = "\n".join(f"- {q['id']}: {q['question']}" for q in questions)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": JUDGE_PROMPT},
+            {"role": "user", "content": f"ARTIFACT_URL={artifact_url}\n\nQuestions:\n{question_lines}"},
+        ]
+    else:
+        messages = [
+            {"role": "system", "content": RUBRIC_ONLY_PROMPT},
+            {"role": "user", "content": f"ARTIFACT_URL={artifact_url}\n\nJudge this page on the five rubric criteria."},
+        ]
     finish_schema = {
         "type": "object",
         "properties": {
