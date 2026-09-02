@@ -471,7 +471,19 @@ with sync_playwright() as p:
       const ext=[...document.querySelectorAll('script[src],link[href]')].map(e=>e.src||e.href).filter(u=>u&&!u.includes(location.host));
       return {svg:svgs, canvas:canv, external_resources:ext};
     }\"\"\")
-    page.screenshot(path=out_path, type="jpeg", quality=70, full_page=full_page)
+    # Bedrock rejects any image whose dimension exceeds 8000px, and a long
+    # scrolling artifact easily exceeds that full-page. Clamp instead of failing:
+    # a clipped top-of-page screenshot still shows the story; a 502 shows nothing.
+    MAX_PX = 7600
+    if full_page:
+        w, h = page.evaluate("() => [document.documentElement.scrollWidth, document.documentElement.scrollHeight]")
+        if h > MAX_PX or w > MAX_PX:
+            page.screenshot(path=out_path, type="jpeg", quality=70,
+                            clip={"x": 0, "y": 0, "width": min(w, MAX_PX), "height": min(h, MAX_PX)})
+        else:
+            page.screenshot(path=out_path, type="jpeg", quality=70, full_page=True)
+    else:
+        page.screenshot(path=out_path, type="jpeg", quality=70)
     browser.close()
 data = base64.b64encode(open(out_path, "rb").read()).decode()
 print(json.dumps({"stats": stats, "b64": data}))
