@@ -123,6 +123,21 @@ or a year — no sentences) AND the five rubric ratings with one-line evidence."
 # Question loading + grading (pure functions; unit-tested in the public repo)
 # --------------------------------------------------------------------------
 
+def normalize_rows(value: Any) -> list[dict[str, Any]]:
+    """Tool arguments arrive shaped differently across models: some return a
+    list of objects, some a JSON-encoded string of that list. Iterating a
+    string yields characters and crashes the caller, so normalise here and
+    drop anything that is not an object rather than raising mid-judgment."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return []
+    if not isinstance(value, list):
+        return []
+    return [row for row in value if isinstance(row, dict)]
+
+
 def load_questions(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
     # A rubric-only bundle ships an empty question list on purpose.
@@ -412,8 +427,8 @@ def _collect_judgment(
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": f"Tool argument JSON error: {exc}"})
                 continue
             if function.get("name") == "finish":
-                answers = {str(row.get("id")): row.get("answer") for row in args.get("answers", [])}
-                rubric = args.get("rubric") or []
+                answers = {str(row.get("id")): row.get("answer") for row in normalize_rows(args.get("answers"))}
+                rubric = normalize_rows(args.get("rubric"))
                 problems = []
                 if _screenshot_count == 0 and screenshot_failures < 2:
                     problems.append("you have not taken a single screenshot — take one and LOOK at the page first")

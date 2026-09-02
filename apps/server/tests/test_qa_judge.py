@@ -159,3 +159,25 @@ def test_model_config_resolution():
     assert qa.resolve_model("custom.model-id:7") == "custom.model-id:7"  # full ids pass through
     assert qa.resolve_model(None) == qa.DEFAULT_MODEL
     assert qa.resolve_model("") == qa.DEFAULT_MODEL
+
+
+# ---------------------------------------------------------------------------
+# Tool-argument normalisation: models differ in how they serialise tool args.
+# Sonnet 5 returned `rubric` as a JSON *string*, which crashed the finish
+# validation ("'str' object has no attribute 'get'") and killed 11 of 12 runs.
+# ---------------------------------------------------------------------------
+
+def test_normalize_rows_parses_a_json_string_payload():
+    rows = qa.normalize_rows('[{"id": "data_fidelity", "score": 4, "evidence": "x"}]')
+    assert rows == [{"id": "data_fidelity", "score": 4, "evidence": "x"}]
+
+
+def test_normalize_rows_passes_through_a_proper_list():
+    payload = [{"id": "insightfulness", "score": 3}]
+    assert qa.normalize_rows(payload) == payload
+
+
+def test_normalize_rows_drops_junk_instead_of_raising():
+    assert qa.normalize_rows("not json at all") == []
+    assert qa.normalize_rows(None) == []
+    assert qa.normalize_rows(["a string", {"id": "visual_craft"}]) == [{"id": "visual_craft"}]
