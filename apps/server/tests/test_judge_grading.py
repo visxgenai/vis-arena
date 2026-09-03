@@ -37,7 +37,7 @@ def report(answers, rubric=RUBRIC, stats=RENDERED, shots=2):
 def test_full_marks_with_rendered_charts():
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}]))
     assert graded["metadata"]["qa_score"] == 100.0
-    assert graded["score"] == pytest.approx(180.0)  # 100 + 80
+    assert graded["score"] == pytest.approx(175.0)  # 100 + 75
     assert graded["max_score"] == 200
 
 
@@ -47,7 +47,7 @@ def test_blank_stats_do_not_gate_by_default():
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}], stats=BLANK))
     assert graded["metadata"]["qa_score"] == 100.0
     assert graded["metadata"]["charts_rendered"] is False
-    assert graded["score"] == pytest.approx(180.0)
+    assert graded["score"] == pytest.approx(175.0)
     assert any("visual assessment governs" in n for n in graded["metadata"]["notes"])
 
 
@@ -55,7 +55,7 @@ def test_gate_applies_only_when_key_opts_in(monkeypatch):
     monkeypatch.setattr(jg, "_load_key", lambda task_id: GATED_KEY)
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}], stats=BLANK))
     assert graded["metadata"]["qa_score"] == 0.0
-    assert graded["score"] == pytest.approx(80.0)  # rubric only survives
+    assert graded["score"] == pytest.approx(75.0)  # rubric only survives
     assert "gated" in graded["summary"]
 
 
@@ -207,10 +207,10 @@ RUBRIC_ONLY_KEY = {"mode": "rubric", "model": "global.anthropic.claude-sonnet-5"
 def test_rubric_only_mode_scores_out_of_100_without_questions(monkeypatch):
     monkeypatch.setattr(jg, "_load_key", lambda task_id: RUBRIC_ONLY_KEY)
     graded = jg.grade_central_result("public-task", {"rubric": RUBRIC, "screenshots_taken": 2})
-    assert graded["score"] == pytest.approx(80.0)
+    assert graded["score"] == pytest.approx(75.0)
     assert graded["max_score"] == 100
     assert graded["metadata"]["qa_score"] is None
-    assert graded["metadata"]["rubric_score"] == pytest.approx(80.0)
+    assert graded["metadata"]["rubric_score"] == pytest.approx(75.0)
     assert graded["per_question"] == []
     assert len(graded["criteria"]) == 5
 
@@ -234,3 +234,30 @@ def test_rubric_only_mode_fails_loudly_when_rubric_missing(monkeypatch):
 def test_both_mode_remains_the_default(monkeypatch):
     graded = jg.grade_central_result("t", report([{"id": "q1", "answer": "acme corp"}, {"id": "q2", "answer": "7"}]))
     assert graded["max_score"] == 200
+
+
+# ---------------------------------------------------------------------------
+# Rubric scale: five 1-5 ratings must span the FULL 0-100 range.
+# The old scale (sum x 4) had a floor of 20 — a wholly broken artifact could
+# not score below 20 while peers scored it 8, compressing the bottom third.
+# ---------------------------------------------------------------------------
+
+def _rubric(*levels: int):
+    return [{"id": rid, "score": level, "evidence": "x"} for rid, level in zip(jg.RUBRIC_IDS, levels)]
+
+
+def test_all_ones_scores_zero_not_twenty():
+    assert jg.rubric_score(_rubric(1, 1, 1, 1, 1)) == 0.0
+
+
+def test_all_fives_still_scores_one_hundred():
+    assert jg.rubric_score(_rubric(5, 5, 5, 5, 5)) == 100.0
+
+
+def test_midpoint_ratings_land_mid_scale():
+    assert jg.rubric_score(_rubric(3, 3, 3, 3, 3)) == 50.0
+
+
+def test_each_rating_step_is_worth_five_points():
+    assert jg.rubric_score(_rubric(4, 3, 4, 5, 4)) == 75.0   # total 20 -> (20-5)/20*100
+    assert jg.rubric_score(_rubric(4, 3, 4, 5, 5)) == 80.0   # one step up

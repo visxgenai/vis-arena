@@ -59,7 +59,10 @@ def rubric_score(rubric: list[dict[str, Any]] | None) -> float | None:
         except (TypeError, ValueError):
             return None
         total += max(1, min(5, level))
-    return round(total * 4.0, 1)
+    # Span the full 0-100 range: five 1s (nothing works) -> 0, five 5s -> 100.
+    # A plain sum x 4 floors at 20, which compressed the bottom of the scale and
+    # made the judge look lenient on broken artifacts that peers scored near 0.
+    return round((total - len(RUBRIC_IDS)) / (4 * len(RUBRIC_IDS)) * 100, 1)
 
 
 def _charts_rendered(render_stats: dict[str, Any] | None) -> bool | None:

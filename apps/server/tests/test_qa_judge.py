@@ -110,7 +110,7 @@ FULL_RUBRIC = [
 
 
 def test_rubric_score_complete_and_clamped():
-    assert qa.rubric_score(FULL_RUBRIC) == 80.0  # (4+3+4+5+4)*4
+    assert qa.rubric_score(FULL_RUBRIC) == 75.0  # total 20 -> (20-5)/20*100
     clamped = [dict(r, score=9) for r in FULL_RUBRIC]
     assert qa.rubric_score(clamped) == 100.0
 
@@ -126,10 +126,10 @@ def test_rubric_score_partial_is_none():
 def test_grade_combined_default_direct_sum():
     answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}  # QA = 100
     report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC)
-    assert report["score"] == pytest.approx(180.0)  # 100 + 80, direct sum
+    assert report["score"] == pytest.approx(175.0)  # 100 + 75, direct sum
     assert report["max_score"] == 200
     assert report["metadata"]["qa_score"] == 100.0
-    assert report["metadata"]["rubric_score"] == 80.0
+    assert report["metadata"]["rubric_score"] == 75.0
     assert report["metadata"]["combine"] == "sum"
     assert len(report["criteria"]) == 5
     dumped = json.dumps(report).lower()
@@ -140,7 +140,7 @@ def test_grade_combined_default_direct_sum():
 def test_grade_combined_weighted_mode_still_available():
     answers = {"q1": "example dashboard", "q2": "3", "q3": "Alpha"}
     report = qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, combine="weighted", qa_weight=0.5)
-    assert report["score"] == pytest.approx(90.0)  # 0.5*100 + 0.5*80
+    assert report["score"] == pytest.approx(87.5)  # 0.5*100 + 0.5*75
     assert report["max_score"] == 100
     assert qa.grade_combined(QUESTIONS, answers, FULL_RUBRIC, combine="weighted", qa_weight=1.0)["score"] == pytest.approx(100.0)
 
