@@ -35,11 +35,12 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
     context = _job_context(payload.job_id, user_id)
     # Budget is per job (= per dataset run): a submission fans out to one generation
     # job per public dataset, so each dataset gets its own full token budget.
+    budget = budget_for_job(context)
     used_tokens = _job_token_total(payload.job_id)
-    if used_tokens >= settings.llm_max_tokens_per_job:
+    if used_tokens >= budget:
         raise HTTPException(status_code=429, detail="Job LLM token budget exhausted")
 
-    remaining_tokens = settings.llm_max_tokens_per_job - used_tokens
+    remaining_tokens = budget - used_tokens
     max_tokens = max(1, min(payload.max_tokens, remaining_tokens))
     model_id = _resolve_bedrock_model(payload.model)
     _record_llm_request_trajectory(payload, context, model_id, max_tokens, remaining_tokens)
@@ -88,11 +89,19 @@ def create_llm_message(payload: LLMMessageRequest, user_id: str) -> dict[str, An
     }
 
 
+def budget_for_job(context: dict[str, Any]) -> int:
+    """Token budget for this job. Central-judge evaluations may have their own,
+    larger allowance; everything else uses the participant budget."""
+    if (context.get("job_type") or "generation") == "central_evaluation":
+        return settings.llm_max_tokens_per_central_eval or settings.llm_max_tokens_per_job
+    return settings.llm_max_tokens_per_job
+
+
 def _job_context(job_id: str, user_id: str) -> dict[str, Any]:
     with connect() as db:
         row = db.execute(
             """
-            select jobs.id, jobs.submission_id, jobs.status, submissions.owner_id
+            select jobs.id, jobs.submission_id, jobs.status, jobs.job_type, submissions.owner_id
             from jobs join submissions on submissions.id = jobs.submission_id
             where jobs.id = ?
             """,

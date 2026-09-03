@@ -61,6 +61,10 @@ class Settings:
             os.environ.get("VIS_ARENA_LLM_MAX_TOKENS_PER_SUBMISSION", "1000000"),
         )
     )
+    # Central-judge runs do more work per job (vision + long exploration) than a
+    # participant run. Give them their own headroom so raising it never changes
+    # the budget participants competed under. 0 = use llm_max_tokens_per_job.
+    llm_max_tokens_per_central_eval: int = int(os.environ.get("VIS_ARENA_LLM_MAX_TOKENS_PER_CENTRAL_EVAL", "0"))
     llm_input_usd_per_1m: float = float(os.environ.get("VIS_ARENA_LLM_INPUT_USD_PER_1M", "0"))
     llm_output_usd_per_1m: float = float(os.environ.get("VIS_ARENA_LLM_OUTPUT_USD_PER_1M", "0"))
     s3_bucket: str = os.environ.get("VIS_ARENA_S3_BUCKET", "vis-arena-dev")
