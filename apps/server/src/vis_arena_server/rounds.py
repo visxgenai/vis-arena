@@ -674,10 +674,18 @@ def write_self_evaluation_for_generation(db, job: dict[str, Any], result: dict[s
     )
 
 
+def _queued_evaluator_type(db, job_id: str) -> str | None:
+    row = db.execute("select evaluator_type from evaluations where job_id = ?", (job_id,)).fetchone()
+    return row["evaluator_type"] if row else None
+
+
 def write_evaluation_job_result(db, job: dict[str, Any], result: dict[str, Any], now: str) -> None:
     if (job.get("job_type") or "") not in EVALUATION_JOB_TYPES:
         return
-    evaluator_type = {
+    # Keep whatever type the evaluation was QUEUED with. Deriving it from job_type
+    # here silently promoted non-scoring rows (e.g. a complete-design experiment
+    # queued as "peer_complete") to "peer", which the leaderboard rollup counts.
+    evaluator_type = _queued_evaluator_type(db, job["id"]) or {
         "peer_review": "peer",
         "peer_evaluation": "peer",
         "central_evaluation": "central",

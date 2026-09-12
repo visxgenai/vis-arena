@@ -1266,3 +1266,40 @@ def test_next_round_avoids_previous_round_reviewer_pairs(monkeypatch) -> None:
 
     repeats = pairs(first) & pairs(second)
     assert not repeats, f"reviewer->target pairs repeated across consecutive rounds: {repeats}"
+
+
+def test_completion_preserves_a_custom_evaluator_type() -> None:
+    """A non-scoring evaluation (e.g. a complete-design experiment) must keep the
+    evaluator_type it was queued with. Deriving it from job_type on completion
+    silently promoted such rows to 'peer', which the leaderboard rollup counts."""
+    owner = _insert_user()
+    reviewer = _insert_user()
+    dataset_id, (task_id,) = _insert_dataset()
+    target_sub = _insert_submission(owner, finalized_at=now_iso())
+    reviewer_sub = _insert_submission(reviewer, finalized_at=now_iso())
+    artifact = _insert_generation_job(target_sub, dataset_id, task_id, status="succeeded")
+
+    job_id = _id("job")
+    evaluation_id = _id("eval")
+    with connect() as db:
+        db.execute(
+            "insert into jobs (id, submission_id, job_type, generator_submission_id, review_target_job_id, "
+            "reviewer_user_id, dataset_id, task_id, status, created_at, updated_at) "
+            "values (?,?,?,?,?,?,?,?,?,?,?)",
+            (job_id, reviewer_sub, "peer_evaluation", target_sub, artifact, reviewer,
+             dataset_id, task_id, "running", now_iso(), now_iso()),
+        )
+        db.execute(
+            "insert into evaluations (id, round_id, artifact_job_id, evaluator_type, evaluator_user_id, "
+            "evaluator_submission_id, evaluator_name, job_id, status, created_at, updated_at) "
+            "values (?,?,?,?,?,?,?,?,?,?,?)",
+            (evaluation_id, "legacy", artifact, "peer_complete", reviewer, reviewer_sub,
+             "experiment", job_id, "running", now_iso(), now_iso()),
+        )
+
+    evaluator.complete_job(job_id, {"result": {"score": 77.0, "max_score": 100}, "score": 77.0})
+
+    with connect() as db:
+        row = db.execute("select evaluator_type, score from evaluations where id = ?", (evaluation_id,)).fetchone()
+    assert row["evaluator_type"] == "peer_complete", "custom type was overwritten -> would enter the leaderboard"
+    assert row["score"] == 77.0
