@@ -466,6 +466,7 @@ def test_public_leaderboard_groups_participants_and_round_history(client: TestCl
     assert body["participants"][0]["best_score"] == 82
     assert body["participants"][0]["best_submission"]["id"] == latest_submission
     assert body["participants"][0]["best_submission"]["jobs"][0]["evaluations"][0]["score"] == 82
+    assert body["participants"][0]["best_submission"]["jobs"][0]["evaluations"][0]["round_id"] == round_id
     assert body["rounds"][0]["participants"][0]["is_new_submission"] is True
     assert "owner_email" not in body["participants"][0]
 
